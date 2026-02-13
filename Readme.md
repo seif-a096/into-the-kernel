@@ -1365,13 +1365,11 @@ The counter is 45
 
 ---
 
-## 🔤 Fun Naming History
+## 🔤 Naming History
 
 | Name    | Stands For                      | Story                                                        |
 | ------- | ------------------------------- | ------------------------------------------------------------ |
-| `bash`  | Bourne Again Shell              | Replaced the Bourne Shell — a "born again" joke              |
 | `grep`  | Global Regular Expression Print | From the old `ed` editor command `g/re/p`                    |
-| `awk`   | Aho, Weinberger, Kernighan      | Named after its three creators                               |
 | `cat`   | Concatenate                     | Original purpose was joining files                           |
 | `chmod` | Change Mode                     | Changes file permission mode                                 |
 | `pwd`   | Print Working Directory         | Prints current location                                      |
