@@ -27,6 +27,13 @@
 19. [Control Flow](#19-control-flow)
 20. [Loops](#20-loops)
 21. [Functions](#21-functions)
+22. [Common Syntax Errors and Pitfalls](#22-common-syntax-errors-and-pitfalls)
+23. [The Three Types of Conditionals](#23-the-three-types-of-conditionals)
+24. [Loop Types Deep Dive](#24-loop-types-deep-dive)
+25. [Command Substitution vs Function Calls](#25-command-substitution-vs-function-calls)
+26. [Number System Conversions](#26-number-system-conversions)
+27. [Special Operators Reference](#27-special-operators-reference)
+28. [Source vs Execute](#28-source-vs-execute)
 
 ---
 
@@ -128,6 +135,8 @@ The **kernel** is the actual core of the OS that controls hardware, memory, and 
 | `PowerShell` | PowerShell                 | Advanced Windows shell          |
 
 > **Analogy:** Shell is the general concept (like SQL), bash is a specific flavor of it (like MySQL). CMD and PowerShell are to Windows what bash and zsh are to Linux.
+
+> **Important Note:** Bash is just ONE type of shell program. The generic term is "shell" - bash is a specific implementation, like how "car" is generic and "Toyota" is specific.
 
 ---
 
@@ -403,6 +412,46 @@ cat file1.txt file2.txt > combined  # join and save
 cat -n myfile.txt                   # display with line numbers
 ```
 
+**Important Note:** `cat` merges files **vertically** (stacks them one after another), while `paste` merges **horizontally** (side-by-side columns).
+
+---
+
+### `cp` — Copy
+
+```bash
+cp source.txt destination/           # copy file to directory
+cp file1.txt file2.txt destination/  # copy multiple files
+cp -r source_dir/ dest_dir/          # copy directory recursively
+cp -p file.txt destination/          # preserve attributes (permissions, timestamps)
+cp -v file.txt destination/          # verbose (show what's being copied)
+```
+
+**CRITICAL PATH RULE:** When you're already inside a directory, use relative paths:
+
+```bash
+cd ~/Desktop/
+cp words.txt numbers.txt Lab1/   # ✅ CORRECT - relative path
+
+# NOT this:
+cp ~/Desktop/words.txt ~/Lab1/   # ❌ WRONG - unnecessary full path
+```
+
+> **Why?** You're already in `~/Desktop/`, so `words.txt` is in the current directory. Using full paths when you're already there is redundant and error-prone.
+
+**Important:** `cp` creates **duplicates** - both the original and the copy exist independently on disk, each taking up space.
+
+---
+
+### `mv` — Move
+
+```bash
+mv oldname.txt newname.txt     # rename file
+mv file.txt /destination/      # move to different location
+mv file.txt /dest/newname.txt  # move and rename
+```
+
+> **Key Difference from `cp`:** `mv` does NOT create a duplicate. The original file is removed from the source location. Only one copy exists on disk.
+
 ---
 
 ### `rm` — Remove
@@ -466,6 +515,8 @@ chmod g-w myfile.txt      # remove write from group
 chmod o+r myfile.txt      # add read for others
 chmod a+x myfile.txt      # add execute for everyone
 chmod ugo+x myfile.txt    # same as a+x
+chmod a-r myfile.txt      # remove read from everyone
+chmod a+r myfile.txt      # restore read for everyone
 ```
 
 Operators:
@@ -512,6 +563,28 @@ The file `-rw-rw-r--` has numeric value **664**.
 chmod o+w myfile.txt    # only others get write
 chmod a+w myfile.txt    # everyone gets write
 ```
+
+### Common Permission Error Pattern
+
+**Problem:** You remove read permission with `chmod a-r`, then try to read the file:
+
+```bash
+chmod a-r SortedMergedContent.txt
+cat SortedMergedContent.txt
+# Permission denied ❌
+```
+
+**Why it fails:** Without read permission, even YOU (the owner) cannot read the file.
+
+**Solution:** Restore read permission:
+
+```bash
+chmod a+r SortedMergedContent.txt  # restore read for all
+# OR
+chmod u+r SortedMergedContent.txt  # restore read for owner only
+```
+
+> **Important:** Permission restrictions apply to EVERYONE, including the file owner (unless you're root).
 
 ---
 
@@ -574,6 +647,24 @@ echo "line 2" >> file.txt       # adds to end, doesn't overwrite
 
 > **Analogy:** `>` erases the paper and writes new content. `>>` writes at the bottom without erasing.
 
+### `<` — Input Redirection
+
+Feeds a file's contents as input to a command:
+
+```bash
+tr "a-z" "A-Z" < input.txt > output.txt
+# Read from input.txt, convert to uppercase, write to output.txt
+```
+
+> **Note:** This is more efficient than `cat input.txt | tr "a-z" "A-Z"` because it avoids creating an unnecessary `cat` process.
+
+### `2>` — Redirect Error Messages
+
+```bash
+command 2>/dev/null    # suppress error messages
+command 2>errors.log   # save errors to file
+```
+
 ### `|` — Pipe
 
 Takes the **stdout** of one command and sends it as **stdin** to the next command.
@@ -594,10 +685,10 @@ Each command passes its output to the next one.
 
 **`>` vs `|`:**
 
-| Operator | Sends output to |
-| -------- | --------------- | --------------- |
-| `>`      | A file          |
-| `        | `               | Another command |
+| Operator | Sends output to | Example                    |
+| -------- | --------------- | -------------------------- |
+| `>`      | A file          | `echo "hi" > file.txt`     |
+| `\|`     | Another command | `cat file.txt \| grep "x"` |
 
 ---
 
@@ -655,6 +746,8 @@ paste file1.txt file2.txt           # join side by side (tab separated)
 paste -d, file1.txt file2.txt       # use comma as delimiter
 ```
 
+**Comparison:**
+
 | `cat file1 file2` | `paste file1 file2` |
 | ----------------- | ------------------- |
 | John              | John 25             |
@@ -684,7 +777,40 @@ echo "hello world" | tr -d 'l'          # delete all l's: heo word
 tr 'a-z' 'A-Z' < myfile.txt
 ```
 
+**Common Pattern - Useless Use of `cat`:**
+
+```bash
+# Less efficient (creates unnecessary process):
+cat SortedMergedContent.txt | tr "a-z" "A-Z" > output.txt
+
+# More efficient (direct input redirection):
+tr "a-z" "A-Z" < SortedMergedContent.txt > output.txt
+```
+
 > **Think of `tr` like find-and-replace in Word, but for individual characters.**
+
+---
+
+### `head` and `tail`
+
+```bash
+head -n 3 file.txt    # first 3 lines
+tail -n 3 file.txt    # last 3 lines
+```
+
+---
+
+### `sort` and `uniq`
+
+```bash
+sort file.txt                # sort lines alphabetically
+sort file.txt > sorted.txt   # save sorted output
+
+uniq file.txt                # remove adjacent duplicate lines
+sort file.txt | uniq         # sort first, then remove duplicates
+```
+
+> **Important:** `uniq` only removes **adjacent** duplicates. Always `sort` first to group duplicates together.
 
 ---
 
@@ -731,6 +857,7 @@ grep "J.hn" file        # J + any char + hn
 grep "Jo*hn" file       # J + zero or more o's + hn
 grep -E "John|Sarah"    # John OR Sarah
 grep "^T[^\s]*s" file   # starts with T, no spaces, contains s
+grep -n "^w.*[0-9]$" MergedContent.txt  # starts with w, ends with digit (with line numbers)
 ```
 
 ### The `\` Escape Character
@@ -856,9 +983,16 @@ echo $AGE           # 20
 
 Rules:
 
-- No spaces around `=`
+- **No spaces around `=`** (this is CRITICAL)
 - Access with `$`
 - No type declaration — everything is a string by default
+
+**Common Error:**
+
+```bash
+NAME = "seif096"    # ❌ WRONG - bash thinks NAME is a command
+NAME="seif096"      # ✅ CORRECT
+```
 
 ### User Input
 
@@ -896,6 +1030,8 @@ ${#NAME}              # length of string
 ${NAME:0:3}           # substring extraction
 ${NAME:-"default"}    # use default value if variable is empty
 ${NAME/seif/user}     # replace "seif" with "user"
+${NAME%.txt}          # remove .txt from end
+${NAME#*/}            # remove everything up to first /
 ```
 
 ### Command Substitution `$()`
@@ -959,6 +1095,20 @@ echo $((2 ** 3))    # 8   power (2³)
 
 > Inside `$(( ))` you do not need `$` before variable names.
 
+**Common Arithmetic Mistakes:**
+
+```bash
+# WRONG - using = instead of == for comparison
+if (( x = 5 )); then    # ❌ This assigns 5 to x, doesn't compare
+    echo "x is 5"
+fi
+
+# CORRECT - use == for comparison
+if (( x == 5 )); then   # ✅ This compares
+    echo "x is 5"
+fi
+```
+
 ---
 
 ## 17. String Manipulation
@@ -1001,6 +1151,28 @@ echo ${stringZ: -4:1}   # C                (1 char starting 4 from end)
 | `${string:7:3}`   | 3 characters starting at position 7 |
 | `${string: -4}`   | Last 4 characters                   |
 | `${string: -4:1}` | 1 character starting 4 from end     |
+
+### Character-by-Character Processing
+
+**Important Note:** Bash strings are **immutable** - you cannot change a character directly. You must rebuild the string.
+
+```bash
+str="hello"
+new=""
+
+for ((i=0; i<${#str}; i++)); do
+    char="${str:$i:1}"
+    # Process char
+    new+="$char"  # Build new string
+done
+```
+
+**This does NOT work:**
+
+```bash
+str="hello"
+str[0]="H"    # ❌ WRONG - Bash strings are not arrays
+```
 
 ---
 
@@ -1051,7 +1223,7 @@ else
 fi
 ```
 
-> `fi` is **if spelled backwards** — bash closes blocks by reversing the opening word (`if`/`fi`, `case`/`esac`).
+> `fi` is **if spelled backwards** — bash closes blocks by reversing the opening word (`if`/`fi`, `case`/`esac`, `do`/`done`).
 
 ### Comparison Operators
 
@@ -1075,13 +1247,15 @@ fi
 
 **Files:**
 
-| Operator | Meaning            |
-| -------- | ------------------ |
-| `-f`     | file exists        |
-| `-d`     | directory exists   |
-| `-r`     | file is readable   |
-| `-w`     | file is writable   |
-| `-x`     | file is executable |
+| Operator | Meaning             |
+| -------- | ------------------- |
+| `-f`     | file exists         |
+| `-d`     | directory exists    |
+| `-r`     | file is readable    |
+| `-w`     | file is writable    |
+| `-x`     | file is executable  |
+| `-z`     | string is empty     |
+| `-n`     | string is not empty |
 
 ### Example with File Check
 
@@ -1117,6 +1291,22 @@ else
     echo "John not found"
 fi
 ```
+
+### `elif` - Else If
+
+```bash
+if [[ "$1" == 1 ]]; then
+    echo "Option 1"
+elif [[ "$1" == 2 ]]; then
+    echo "Option 2"
+elif [[ "$1" == 3 ]]; then
+    echo "Option 3"
+else
+    echo "Unknown option"
+fi
+```
+
+**Important:** Only ONE `fi` at the end closes the entire `if/elif/else` block.
 
 ---
 
@@ -1240,6 +1430,38 @@ myfunction() {
 }
 ```
 
+**❌ WRONG - Don't mix both:**
+
+```bash
+function myfunction() {    # ❌ Don't use both 'function' and ()
+    echo "test"
+}
+```
+
+**Important Syntax Rules:**
+
+1. **Space before `{` is REQUIRED:**
+
+```bash
+function myFunc{      # ❌ WRONG - missing space
+    echo "test"
+}
+
+function myFunc {     # ✅ CORRECT
+    echo "test"
+}
+```
+
+2. **Empty functions need a placeholder:**
+
+```bash
+function myFunc {}    # ❌ WRONG - empty body
+
+function myFunc {     # ✅ CORRECT - use : as placeholder
+    :
+}
+```
+
 ### Calling a Function
 
 ```bash
@@ -1291,6 +1513,20 @@ echo $?    # 0
 
 > `return` in bash only returns an **exit code** (0-255), not a value. For actual values, use `echo` and capture with `$()`.
 
+**CRITICAL:** `echo` must come BEFORE `return`. Code after `return` never executes:
+
+```bash
+function test {
+    return 1
+    echo "This never prints"    # ❌ Never reached
+}
+
+function test {
+    echo "This prints"          # ✅ Executes
+    return 1
+}
+```
+
 ### Variable Scope
 
 ```bash
@@ -1302,6 +1538,12 @@ function myfunction {
 # use local to restrict scope
 function myfunction {
     local NAME="seif096"    # only inside this function
+}
+
+# Multiple local variables
+function myfunction {
+    local x y z           # ✅ Space-separated
+    # NOT: local x,y,z    # ❌ Wrong
 }
 ```
 
@@ -1365,6 +1607,1023 @@ The counter is 45
 
 ---
 
+## 22. Common Syntax Errors and Pitfalls
+
+### Critical Spacing Rules
+
+**1. No spaces around `=` in variable assignment:**
+
+```bash
+NAME = "value"    # ❌ WRONG - bash thinks NAME is a command
+NAME="value"      # ✅ CORRECT
+```
+
+**2. Spaces REQUIRED around `[` and `]`:**
+
+```bash
+if[ "$x" = "y" ]; then       # ❌ WRONG - no space after if
+if ["$x" = "y" ]; then       # ❌ WRONG - no space after [
+if [ "$x"="y" ]; then        # ❌ WRONG - no spaces around =
+if [ "$x" = "y" ]; then      # ✅ CORRECT
+```
+
+**3. Space REQUIRED before `{` in functions:**
+
+```bash
+function test{               # ❌ WRONG
+    echo "hi"
+}
+
+function test {              # ✅ CORRECT
+    echo "hi"
+}
+```
+
+**4. Spaces in `[[` and `]]`:**
+
+```bash
+if[[ "$x" == "y" ]]; then    # ❌ WRONG - no space after if
+if [["$x" == "y"]]; then     # ❌ WRONG - no space after [[
+if [[ "$x"=="y" ]]; then     # ❌ WRONG - no spaces around ==
+if [[ "$x" == "y" ]]; then   # ✅ CORRECT
+```
+
+### Quoting Variables
+
+**Always quote variables in `[ ]` tests:**
+
+```bash
+if [ $NAME = "test" ]; then      # ❌ Dangerous - breaks if NAME is empty
+if [ "$NAME" = "test" ]; then    # ✅ CORRECT - safe
+```
+
+**In `[[` quoting is optional but recommended:**
+
+```bash
+if [[ $NAME == "test" ]]; then   # ✅ Works but not best practice
+if [[ "$NAME" == "test" ]]; then # ✅ Better - always quote
+```
+
+### Using `$` with Variables
+
+**Inside arithmetic `$(( ))`, `$` is optional:**
+
+```bash
+x=5
+echo $((x + 1))      # ✅ Works
+echo $(($x + 1))     # ✅ Also works
+```
+
+**Everywhere else, `$` is required:**
+
+```bash
+echo x               # ❌ Prints literal "x"
+echo $x              # ✅ Prints value of x
+```
+
+### Function Definition Mistakes
+
+```bash
+# ❌ WRONG - can't use both 'function' and ()
+function test() {
+    echo "hi"
+}
+
+# ✅ CORRECT - choose one
+function test {
+    echo "hi"
+}
+
+# ✅ ALSO CORRECT
+test() {
+    echo "hi"
+}
+
+# ❌ WRONG - empty function needs placeholder
+function test {
+}
+
+# ✅ CORRECT - use : as no-op
+function test {
+    :
+}
+```
+
+### Arithmetic Comparison Mistakes
+
+**Using `=` instead of `==` in arithmetic:**
+
+```bash
+if (( x = 5 )); then         # ❌ WRONG - assigns 5, doesn't compare
+    echo "x is 5"
+fi
+
+if (( x == 5 )); then        # ✅ CORRECT - compares
+    echo "x is 5"
+fi
+```
+
+**Using `%` for modulo in `[ ]`:**
+
+```bash
+if [ ${#str} % 2 = 0 ]; then     # ❌ WRONG - [ ] treats this as string
+    echo "even"
+fi
+
+if (( ${#str} % 2 == 0 )); then  # ✅ CORRECT - use (( )) for math
+    echo "even"
+fi
+```
+
+### Missing Semicolons
+
+**In one-line if statements:**
+
+```bash
+if [ "$x" = "y" ] then echo "yes"; fi     # ❌ WRONG - missing ; before then
+if [ "$x" = "y" ]; then echo "yes"; fi    # ✅ CORRECT
+```
+
+**In one-line for loops:**
+
+```bash
+for i in {1..5} do echo $i; done          # ❌ WRONG - missing ; before do
+for i in {1..5}; do echo $i; done         # ✅ CORRECT
+```
+
+### File Extension in `${var%pattern}`
+
+**Understanding substring removal:**
+
+```bash
+file="document.txt"
+echo ${file%.txt}        # document (removes .txt from end)
+echo ${file%.doc}        # document.txt (no match, nothing removed)
+```
+
+**Using it with variables:**
+
+```bash
+half=$((${#parens} / 2))        # ✅ CORRECT
+lParen="${parens:0:half}"       # ✅ CORRECT - quote for safety
+rParen="${parens:half}"         # ✅ CORRECT
+```
+
+---
+
+## 23. The Three Types of Conditionals
+
+### Complete Comparison Chart
+
+| Feature               | `[ ]`                  | `[[ ]]`             | `(( ))`               |
+| --------------------- | ---------------------- | ------------------- | --------------------- |
+| **Type**              | Test command (POSIX)   | Bash keyword        | Arithmetic evaluation |
+| **String comparison** | `=` only               | `==` or `=`         | ❌ Not for strings    |
+| **Number comparison** | `-eq`, `-lt`, `-gt`... | `-eq`, `-lt`, `-gt` | `==`, `<`, `>`        |
+| **Math operators**    | ❌ No                  | ❌ No               | ✅ Yes (`+`, `*`...)  |
+| **Pattern matching**  | ❌ No                  | ✅ Yes (`*`, `?`)   | ❌ No                 |
+| **Variable quoting**  | ✅ Required            | Optional (safer)    | Not needed            |
+| **Word splitting**    | ✅ Yes (dangerous)     | ❌ No (safe)        | N/A                   |
+| **AND / OR**          | `-a` / `-o`            | `&&` / `\|\|`       | `&&` / `\|\|`         |
+| **Regex matching**    | ❌ No                  | ✅ Yes (`=~`)       | ❌ No                 |
+| **Portable**          | ✅ POSIX (all shells)  | ❌ Bash only        | ❌ Bash only          |
+| **When to use**       | Scripts for any shell  | Modern bash scripts | Math comparisons      |
+
+### `[ ]` — Test Command (Old Style)
+
+```bash
+# String comparison - use = not ==
+if [ "$a" = "$b" ]; then
+    echo "equal"
+fi
+
+# Numeric comparison - use -eq, -ne, -lt, -gt, -le, -ge
+if [ "$num" -eq 5 ]; then
+    echo "equals 5"
+fi
+
+# File tests
+if [ -f "file.txt" ]; then
+    echo "file exists"
+fi
+
+# String tests
+if [ -z "$str" ]; then      # true if string is empty
+    echo "empty"
+fi
+
+if [ -n "$str" ]; then      # true if string is not empty
+    echo "not empty"
+fi
+```
+
+**CRITICAL RULES for `[ ]`:**
+
+1. **Must have spaces** after `[` and before `]`
+2. **Must quote variables** or it breaks with empty strings
+3. Use `=` for strings (NOT `==`)
+4. Use `-eq`, `-ne`, `-lt`, `-gt` for numbers (NOT `==`, `<`, `>`)
+
+### `[[ ]]` — Advanced Test (Modern, Recommended)
+
+```bash
+# String comparison - can use == or =
+if [[ "$a" == "$b" ]]; then
+    echo "equal"
+fi
+
+# Pattern matching
+if [[ "$filename" == *.txt ]]; then
+    echo "text file"
+fi
+
+# Regex matching
+if [[ "$email" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}$ ]]; then
+    echo "valid email"
+fi
+
+# Logical operators
+if [[ "$x" == "yes" && "$y" == "no" ]]; then
+    echo "both conditions true"
+fi
+
+# Multiple conditions
+if [[ "$1" == 1 ]] || [[ "$1" == 2 ]]; then
+    echo "1 or 2"
+fi
+```
+
+**BENEFITS of `[[ ]]`:**
+
+1. Safer - no word splitting
+2. Pattern matching works (`*`, `?`)
+3. Can use `==` for strings (more intuitive)
+4. Better `&&` and `||` support
+5. Quoting is optional (but still recommended)
+
+### `(( ))` — Arithmetic Evaluation (Math Only)
+
+```bash
+# Direct math comparison - use C-style operators
+if (( x == 5 )); then
+    echo "x equals 5"
+fi
+
+# No $ needed for variables inside
+if (( length % 2 == 0 )); then
+    echo "even length"
+fi
+
+# Complex expressions
+if (( (x + y) * 2 > 100 )); then
+    echo "result > 100"
+fi
+
+# All C operators work
+if (( x >= 10 && x <= 20 )); then
+    echo "x is between 10 and 20"
+fi
+```
+
+**OPERATORS in `(( ))`:**
+
+```bash
+==    equal
+!=    not equal
+<     less than
+>     greater than
+<=    less than or equal
+>=    greater than or equal
++     addition
+-     subtraction
+*     multiplication
+/     division
+%     modulo
+**    exponentiation
+&&    logical AND
+||    logical OR
+```
+
+### When to Use Which
+
+| Situation                       | Use              |
+| ------------------------------- | ---------------- |
+| Math comparison                 | `(( ))`          |
+| String comparison               | `[[ ]]`          |
+| Pattern matching                | `[[ ]]`          |
+| File existence                  | `[[ ]]` or `[ ]` |
+| POSIX portable script           | `[ ]`            |
+| Modern bash-only script         | `[[ ]]`          |
+| Arithmetic with operators `%+-` | `(( ))`          |
+
+### Common Mistakes
+
+```bash
+# ❌ WRONG - math in [ ]
+if [ ${#str} % 2 = 0 ]; then         # Treats as string!
+    echo "even"
+fi
+
+# ✅ CORRECT - use (( )) for math
+if (( ${#str} % 2 == 0 )); then
+    echo "even"
+fi
+
+# ❌ WRONG - assignment instead of comparison in (( ))
+if (( x = 5 )); then                 # Assigns 5, doesn't compare!
+    echo "x is 5"
+fi
+
+# ✅ CORRECT - use ==
+if (( x == 5 )); then
+    echo "x is 5"
+fi
+
+# ❌ WRONG - using == with [ ]
+if [ "$x" == "5" ]; then             # Works in bash but not POSIX
+    echo "x is 5"
+fi
+
+# ✅ CORRECT - use = with [ ]
+if [ "$x" = "5" ]; then
+    echo "x is 5"
+fi
+```
+
+---
+
+## 24. Loop Types Deep Dive
+
+### The Three For Loop Styles
+
+#### Style 1: List Iteration (Word-Based)
+
+```bash
+# Iterate over words
+for item in apple banana cherry; do
+    echo "$item"
+done
+
+# Iterate over files
+for file in *.txt; do
+    echo "Found: $file"
+done
+
+# Iterate over command output
+for user in $(cat /etc/passwd | cut -d: -f1); do
+    echo "User: $user"
+done
+```
+
+**COMMON MISTAKE:**
+
+```bash
+for i in flip; do        # ❌ Iterates over word "flip" (1 time)
+    echo "$i"
+done
+
+# This is NOT looping over characters!
+# It literally loops over the word "flip" once
+```
+
+#### Style 2: C-Style Arithmetic Loop
+
+**This is the CORRECT way to loop over string characters:**
+
+```bash
+str="hello"
+
+# Loop with counter
+for ((i=0; i<${#str}; i++)); do
+    char="${str:$i:1}"
+    echo "$char"
+done
+
+# Reverse loop
+for ((i=${#str}-1; i>=0; i--)); do
+    char="${str:$i:1}"
+    echo "$char"
+done
+```
+
+**Syntax breakdown:**
+
+```bash
+for (( initialization; condition; increment )); do
+    commands
+done
+```
+
+**Examples:**
+
+```bash
+# Count 0 to 9
+for ((i=0; i<10; i++)); do
+    echo $i
+done
+
+# Count by 2s
+for ((i=0; i<=10; i+=2)); do
+    echo $i  # 0 2 4 6 8 10
+done
+
+# Multiple variables
+for ((i=0, j=10; i<10; i++, j--)); do
+    echo "i=$i j=$j"
+done
+```
+
+#### Style 3: Range Expansion
+
+```bash
+# Number range
+for i in {1..5}; do
+    echo $i
+done
+
+# With step
+for i in {0..10..2}; do
+    echo $i  # 0 2 4 6 8 10
+done
+
+# Reverse
+for i in {10..1}; do
+    echo $i
+done
+
+# Letters
+for letter in {a..z}; do
+    echo $letter
+done
+```
+
+**Important:** Range expansion `{1..5}` happens BEFORE variable substitution:
+
+```bash
+n=5
+for i in {1..$n}; do    # ❌ WRONG - doesn't expand $n
+    echo $i
+done
+
+# Use C-style instead:
+for ((i=1; i<=n; i++)); do    # ✅ CORRECT
+    echo $i
+done
+```
+
+### Loop Comparison Table
+
+| Loop Type     | When to Use                         | Example                 |
+| ------------- | ----------------------------------- | ----------------------- |
+| `for in list` | Iterating over words, files, array  | `for word in $words`    |
+| `for ((;;))`  | Counter-based, character iteration  | `for ((i=0; i<n; i++))` |
+| `for in {}`   | Fixed numeric/letter ranges         | `for i in {1..10}`      |
+| `while`       | Condition-based, unknown iterations | `while [ $x -lt 10 ]`   |
+| `until`       | Run until condition becomes true    | `until [ $x -ge 10 ]`   |
+
+---
+
+## 25. Command Substitution vs Function Calls
+
+### Understanding `$()`
+
+`$()` is **command substitution** - it runs a command and captures its output:
+
+```bash
+current_dir=$(pwd)
+file_count=$(ls | wc -l)
+today=$(date +%Y-%m-%d)
+
+echo "Today is $today"
+```
+
+### When to Use `$()`
+
+**✅ USE `$()` when you need to CAPTURE output:**
+
+```bash
+# Capture and store
+result=$(command)
+
+# Use output in another command
+echo "Result: $(command)"
+
+# Use in conditional
+if [[ $(whoami) == "root" ]]; then
+    echo "Running as root"
+fi
+```
+
+**❌ DON'T USE `$()` when you just want to RUN something:**
+
+```bash
+# WRONG - captures output but does nothing with it
+$(echo "Hello")
+
+# CORRECT - just displays it
+echo "Hello"
+```
+
+### With Functions
+
+**CRITICAL CONCEPT:** Functions in bash are called **like commands**, NOT with `$()`:
+
+```bash
+function greet {
+    echo "Hello $1"
+}
+
+# ❌ WRONG - unnecessary $()
+if [[ condition ]]; then
+    $(greet "World")    # Output captured and discarded!
+fi
+
+# ✅ CORRECT - just call it
+if [[ condition ]]; then
+    greet "World"       # Output displays directly
+fi
+
+# ✅ CORRECT - capture if you need the value
+message=$(greet "World")
+echo "Message: $message"
+```
+
+### Why the Confusion?
+
+**In many languages:**
+
+```javascript
+// JavaScript
+result = myFunction(); // Need () to call
+
+// Python
+result = my_function(); // Need () to call
+```
+
+**In Bash:**
+
+```bash
+# Bash - NO PARENTHESES for function calls
+result=$(myfunction)      # Call with $() only if capturing output
+myfunction                # Call directly to run and display
+myfunction arg1 arg2      # Call with arguments
+```
+
+### Practical Examples
+
+```bash
+function toDecimal {
+    printf "%d\n" "$1"
+}
+
+# WRONG ways to call:
+if [[ "$1" == 1 ]]; then
+    $(toDecimal "$2")     # ❌ Captures output, discards it
+fi
+
+# CORRECT ways to call:
+if [[ "$1" == 1 ]]; then
+    toDecimal "$2"        # ✅ Runs and displays output
+fi
+
+# OR capture if needed:
+result=$(toDecimal "$2")  # ✅ Captures for later use
+echo "Result: $result"
+```
+
+### Quick Decision Tree
+
+```
+Do I need the command's output as a value?
+    ├─ YES → Use $()
+    │         result=$(command)
+    │
+    └─ NO → Just run it
+              command
+              function_name
+```
+
+---
+
+## 26. Number System Conversions
+
+### Understanding Number Bases
+
+```bash
+# Decimal (base 10): 0-9
+26
+
+# Hexadecimal (base 16): 0-9, A-F
+1A    # = 1×16 + 10 = 26 in decimal
+
+# Binary (base 2): 0-1
+11010 # = 16 + 8 + 2 = 26 in decimal
+
+# Octal (base 8): 0-7
+32    # = 3×8 + 2 = 26 in decimal
+```
+
+### Hex → Decimal Conversions
+
+```bash
+# Method 1: Using arithmetic expansion with 0x prefix
+echo $((0x1A))              # 26
+echo $((0xFF))              # 255
+
+# Method 2: Using base#number syntax
+echo $((16#1A))             # 26
+echo $((16#FF))             # 255
+
+# Method 3: Using printf
+printf "%d\n" 0x1A          # 26
+printf "%d\n" 0xFF          # 255
+```
+
+**IMPORTANT:** `0x` tells bash "this is hexadecimal":
+
+```bash
+echo $((0x1A))    # ✅ Correctly interprets as hex
+echo $((1A))      # ❌ Error - not valid without 0x
+```
+
+### Decimal → Hex Conversions
+
+```bash
+# Method 1: Using printf (most common)
+printf "%X\n" 26            # 1A (uppercase)
+printf "%x\n" 26            # 1a (lowercase)
+printf "0x%X\n" 26          # 0x1A (with prefix)
+
+# Method 2: Using bc
+echo "obase=16; 26" | bc    # 1A
+```
+
+**Key Point:** `$(( ))` can INPUT any base but ALWAYS OUTPUTS decimal:
+
+```bash
+echo $((0x1A))    # Input: hex, Output: 26 (decimal)
+echo $((16#FF))   # Input: hex, Output: 255 (decimal)
+echo $((26))      # Input: decimal, Output: 26 (decimal)
+```
+
+**To output hex, you MUST use `printf`:**
+
+```bash
+printf "%X\n" 26  # Decimal → Hex: 1A
+```
+
+### Other Base Conversions
+
+```bash
+# Binary → Decimal
+echo $((2#1010))            # 10
+echo $((0b1010))            # 10 (bash 4.3+)
+
+# Octal → Decimal
+echo $((8#77))              # 63
+echo $((077))               # 63 (leading 0 means octal)
+
+# Decimal → Binary
+echo "obase=2; 26" | bc     # 11010
+
+# Decimal → Octal
+printf "%o\n" 26            # 32
+echo "obase=8; 26" | bc     # 32
+```
+
+### Practical Conversion Functions
+
+```bash
+#!/bin/bash
+
+function toDecimal {
+    # Accepts hex with or without 0x prefix
+    local input="$1"
+
+    # Add 0x if not present
+    if [[ ! "$input" =~ ^0x ]]; then
+        input="0x$input"
+    fi
+
+    printf "%d\n" "$input"
+}
+
+function toHex {
+    printf "%X\n" "$1"
+}
+
+# Usage
+toDecimal "1A"      # 26
+toDecimal "0x1A"    # 26
+toHex 26            # 1A
+```
+
+### Common Mistakes
+
+```bash
+# ❌ WRONG - trying to convert decimal to hex with $(())
+echo $((26))        # Still outputs 26, not 1A
+
+# ✅ CORRECT - use printf
+printf "%X\n" 26    # 1A
+
+# ❌ WRONG - missing 0x prefix
+echo $((1A))        # Error: invalid number
+
+# ✅ CORRECT - use 0x
+echo $((0x1A))      # 26
+```
+
+---
+
+## 27. Special Operators Reference
+
+### The `%` Operator
+
+**Usage 1: Modulo (Remainder) - In Arithmetic**
+
+```bash
+echo $((10 % 3))    # 1 (remainder of 10 ÷ 3)
+echo $((17 % 5))    # 2 (remainder of 17 ÷ 5)
+
+# Check if even
+if (( num % 2 == 0 )); then
+    echo "even"
+fi
+```
+
+**Usage 2: Pattern Removal from End - In Parameter Expansion**
+
+```bash
+file="document.txt"
+echo ${file%.txt}        # document (removes .txt)
+
+path="/home/user/file.txt"
+echo ${path%/*}          # /home/user (removes /file.txt)
+
+# % removes shortest match from end
+file="hello.world.txt"
+echo ${file%.*}          # hello.world (removes .txt)
+
+# %% removes longest match from end
+echo ${file%%.*}         # hello (removes .world.txt)
+```
+
+### The `#` Operator
+
+**Pattern Removal from Start - In Parameter Expansion**
+
+```bash
+path="/home/user/file.txt"
+echo ${path#*/}          # home/user/file.txt (removes /)
+
+# # removes shortest match from start
+echo ${path#/*/}         # user/file.txt (removes /home/)
+
+# ## removes longest match from start
+echo ${path##*/}         # file.txt (removes /home/user/)
+```
+
+### The `*` Operator
+
+**Usage 1: Glob Pattern (Wildcard)**
+
+```bash
+ls *.txt                 # all .txt files
+rm file*                 # all files starting with "file"
+```
+
+**Usage 2: Multiplication - In Arithmetic**
+
+```bash
+echo $((5 * 3))          # 15
+```
+
+**Usage 3: All Array Elements**
+
+```bash
+array=(a b c)
+echo ${array[*]}         # a b c
+```
+
+### The `?` Operator
+
+**Single Character Wildcard**
+
+```bash
+ls file?.txt             # file1.txt, fileA.txt, etc.
+ls ???.txt               # abc.txt, xyz.txt, etc.
+```
+
+### The `@` Operator
+
+**All Array Elements (Preserving Word Boundaries)**
+
+```bash
+array=(a b c)
+echo ${array[@]}         # a b c
+
+# Difference from * when quoted:
+for item in "${array[*]}"; do
+    echo "$item"         # Prints once: "a b c"
+done
+
+for item in "${array[@]}"; do
+    echo "$item"         # Prints 3 times: a, b, c
+done
+```
+
+### Comparison Table
+
+| Operator | In Arithmetic | In Parameter Expansion | As Glob     |
+| -------- | ------------- | ---------------------- | ----------- |
+| `%`      | Modulo        | Remove from end        | -           |
+| `#`      | -             | Remove from start      | Comment     |
+| `*`      | Multiply      | All array elements     | Wildcard    |
+| `?`      | -             | -                      | Single char |
+| `@`      | -             | All array elements     | -           |
+
+---
+
+## 28. Source vs Execute
+
+### Two Ways to Run a Script
+
+#### Method 1: Execute (Create New Process)
+
+```bash
+chmod +x script.sh
+./script.sh
+```
+
+**What happens:**
+
+1. New bash process is created (fork)
+2. Script runs in the new process
+3. Variables and functions exist only in that process
+4. Process ends, everything disappears
+5. Your original shell is unchanged
+
+```
+Your Shell (PID 1000)
+    │
+    └─> Fork: New Shell (PID 1001)
+            │
+            └─> Runs script
+            └─> Sets variables
+            └─> Defines functions
+            └─> Process ends
+    │
+    └─> Back to your shell
+        Variables/functions gone ❌
+```
+
+#### Method 2: Source (Current Process)
+
+```bash
+source script.sh
+# OR
+. script.sh
+```
+
+**What happens:**
+
+1. NO new process created
+2. Script commands run in YOUR current shell
+3. Variables persist after script ends
+4. Functions persist after script ends
+
+```
+Your Shell (PID 1000)
+    │
+    └─> Reads script line by line
+    └─> Executes each line in current shell
+    └─> Variables remain ✅
+    └─> Functions remain ✅
+```
+
+### Key Differences
+
+| Aspect                | Execute `./script.sh` | Source `source script.sh` |
+| --------------------- | --------------------- | ------------------------- |
+| **New process**       | ✅ Yes                | ❌ No                     |
+| **Needs `chmod +x`**  | ✅ Yes                | ❌ No                     |
+| **Variables persist** | ❌ No                 | ✅ Yes                    |
+| **Functions persist** | ❌ No                 | ✅ Yes                    |
+| **Changes PATH**      | Only in subprocess    | In current shell          |
+| **Use case**          | Run programs          | Load config/functions     |
+
+### When to Use Each
+
+**Use Execute (`./script`) when:**
+
+- Running standalone programs
+- You don't need variables/functions afterwards
+- Script should run in isolation
+- Script modifies files (doesn't matter which process)
+
+**Use Source (`source script`) when:**
+
+- Loading configuration (`.bashrc`, `.bash_profile`)
+- Defining functions you want to use
+- Setting environment variables for current session
+- Activating virtual environments (`source venv/bin/activate`)
+- Loading utility functions into current shell
+
+### Practical Examples
+
+**Example 1: Configuration File**
+
+```bash
+# config.sh
+export DATABASE_URL="postgres://localhost/mydb"
+export API_KEY="secret123"
+
+alias ll='ls -la'
+
+greet() {
+    echo "Hello from config!"
+}
+```
+
+```bash
+# Execute - variables disappear
+./config.sh
+echo $DATABASE_URL    # Empty! ❌
+
+# Source - variables persist
+source config.sh
+echo $DATABASE_URL    # postgres://localhost/mydb ✅
+greet                 # Hello from config! ✅
+ll                    # Works! ✅
+```
+
+**Example 2: Function Library**
+
+```bash
+# utils.sh
+function toUpper {
+    echo "$1" | tr 'a-z' 'A-Z'
+}
+
+function toLower {
+    echo "$1" | tr 'A-Z' 'a-z'
+}
+```
+
+```bash
+# Execute - functions not available
+./utils.sh
+toUpper "hello"       # Command not found ❌
+
+# Source - functions available
+source utils.sh
+toUpper "hello"       # HELLO ✅
+toLower "WORLD"       # world ✅
+```
+
+**Example 3: Python Virtual Environment**
+
+```bash
+# This is why you SOURCE, not execute:
+source venv/bin/activate    # ✅ Modifies current shell's PATH
+
+# If you executed instead:
+./venv/bin/activate         # ❌ PATH modified in subprocess, not your shell
+```
+
+### Common Misconceptions
+
+**❌ WRONG:** "Source is like import in Python"
+
+**✅ CORRECT:** Source is like copy-pasting the file's contents into your current terminal and running them line by line.
+
+**❌ WRONG:** "Execute needs `chmod +x`, source doesn't need it"
+
+**✅ CORRECT:** Execute needs execute permission AND read permission. Source only needs read permission.
+
+### The `.` Shorthand
+
+```bash
+# These are identical:
+source script.sh
+. script.sh
+
+# The dot (.) is the POSIX-standard command
+# 'source' is a bash-specific alias for '.'
+```
+
+### Checking What Sourced Your Current Shell
+
+```bash
+# See what's loaded in current session
+echo $PATH                  # Environment variables
+declare -F                  # All functions
+alias                       # All aliases
+```
+
+---
+
 ## 🔤 Naming History
 
 | Name    | Stands For                      | Story                                                        |
@@ -1377,5 +2636,84 @@ The counter is 45
 | `bin`   | Binaries                        | Pre-compiled executable programs                             |
 | `#!`    | Shebang / Hashbang              | Hash + Bang = Shebang (also old slang for "the whole thing") |
 | `tr`    | Translate                       | Translates characters                                        |
+| `cp`    | Copy                            | Copies files                                                 |
+| `mv`    | Move                            | Moves/renames files                                          |
+| `rm`    | Remove                          | Removes files                                                |
+| `ls`    | List                            | Lists directory contents                                     |
 
 ---
+
+## 🎯 Quick Reference Card
+
+```bash
+# VARIABLES
+NAME="value"              # Define (no spaces around =)
+echo $NAME                # Access
+echo ${NAME}              # Parameter expansion
+result=$(command)         # Command substitution
+result=$((5 + 3))         # Arithmetic expansion
+
+# CONDITIONALS
+[ "$x" = "y" ]            # Old test (POSIX)
+[[ "$x" == "y" ]]         # Modern test (bash)
+(( x == 5 ))              # Arithmetic test
+
+# LOOPS
+for i in {1..5}           # Range
+for ((i=0; i<n; i++))     # C-style
+for item in $list         # List iteration
+while [ condition ]       # While loop
+until [ condition ]       # Until loop
+
+# FUNCTIONS
+function name { }         # Define (space before {)
+name arg1 arg2            # Call (no parentheses)
+echo "result"             # Return value (capture with $())
+return 0                  # Return exit code
+local var="value"         # Local variable
+
+# STRINGS
+${#str}                   # Length
+${str:pos:len}            # Substring
+${str^^}                  # Uppercase
+${str,,}                  # Lowercase
+${str/old/new}            # Replace
+
+# MATH
+$((x + y))                # Addition
+$((x % 2))                # Modulo
+(( x == 5 ))              # Comparison
+
+# FILES
+cp src dst                # Copy
+mv src dst                # Move
+rm file                   # Remove
+cat file                  # Display
+chmod +x file             # Make executable
+
+# REDIRECTION
+cmd > file                # Overwrite
+cmd >> file               # Append
+cmd < file                # Input from file
+cmd1 | cmd2               # Pipe
+
+# PERMISSIONS
+chmod u+x file            # Add execute for user
+chmod a-r file            # Remove read for all
+chmod 755 file            # rwxr-xr-x
+
+# CONVERSIONS
+echo $((0x1A))            # Hex to decimal
+printf "%X" 26            # Decimal to hex
+
+# SOURCE vs EXECUTE
+./script.sh               # Execute (new process)
+source script.sh          # Source (current process)
+. script.sh               # Same as source
+```
+
+---
+
+**END OF GUIDE** 🎓
+
+This comprehensive guide covers everything from the foundational concepts of how Linux works to advanced bash scripting techniques, common pitfalls, and best practices. Keep it as a reference for your computer engineering journey!
