@@ -2714,6 +2714,776 @@ source script.sh          # Source (current process)
 
 ---
 
+---
+
+## 29. Introduction to C Language
+
+> Notes from Lab 2 — covering IO, data types, compilation, pointers, memory allocation, Makefiles, GDB debugging, and file handling in C.
+
+---
+
+### IO — printf and scanf
+
+**printf format specifiers:**
+
+| Specifier | Prints          |
+| --------- | --------------- |
+| `%d`      | decimal integer |
+| `%c`      | character       |
+| `%f`      | float/double    |
+| `%s`      | string          |
+| `%p`      | pointer address |
+
+**Display width vs precision — common mistake:**
+
+```c
+printf("%6s", str);    // minimum WIDTH of 6 — pads with spaces if shorter, does NOT truncate
+printf("%.6s", str);   // maximum PRECISION of 6 — truncates if longer
+printf("%10.6s", str); // 10 wide, max 6 chars printed
+```
+
+> **Key distinction:** `%6s` controls minimum space used. `%.6s` controls maximum characters printed. If you want to print only 6 characters use `%.6s` not `%6s`.
+
+**scanf — reading input:**
+
+```c
+scanf("%d", &x);       // & required for non-array types
+scanf("%s", str);      // no & needed — arrays are already pointers
+```
+
+> **Common mistake:** forgetting `&` with scanf on non-array types will crash the program. `scanf` needs the address to know where in memory to store the value.
+
+> **Another mistake:** putting messages inside scanf format string — scanf ignores text, only reads format specifiers. Always use printf for messages, scanf only for reading.
+
+```c
+// WRONG
+scanf("enter a number: %d", &x);   // message is ignored, confusing
+
+// CORRECT
+printf("enter a number: ");
+scanf("%d", &x);
+```
+
+**Escape sequences:**
+
+| Sequence | Meaning                                       |
+| -------- | --------------------------------------------- |
+| `\n`     | newline — moves to next line                  |
+| `\r`     | carriage return — moves to start of SAME line |
+| `\t`     | horizontal tab                                |
+| `\\`     | backslash                                     |
+| `\"`     | double quote                                  |
+
+> **`\r` note:** Moves cursor back to beginning of current line without going down. Rarely used alone. Windows uses `\r\n` to end lines while Linux uses just `\n` — this can cause bugs when sharing files between systems.
+
+---
+
+### Data Types
+
+| Type     | Size    | Range                |
+| -------- | ------- | -------------------- |
+| `char`   | 1 byte  | -128 to 127 (signed) |
+| `int`    | 4 bytes | ~±2 billion          |
+| `float`  | 4 bytes | 7 digits precision   |
+| `double` | 8 bytes | 15 digits precision  |
+
+**bool in C:**
+
+C has no built-in bool. Uses integers instead:
+
+- `0` = false
+- any non-zero = true
+
+```c
+// old C (C89) — no bool, use int
+int isTrue = 1;
+int isFalse = 0;
+
+// modern C (C99+) — include header
+#include <stdbool.h>
+bool isTrue = true;
+bool isFalse = false;
+```
+
+> **Comparison with C++:** C++ has `bool` built in without any header. C needs `<stdbool.h>`. Under the hood both are still just integers.
+
+---
+
+### Compilation & Execution
+
+```bash
+gcc hello.c -o hello      # compile → named executable
+gcc hello.c               # compile → default name a.out
+./hello                   # run executable
+gcc hello.c -o hello && ./hello   # compile and run in one line
+```
+
+**Important flags:**
+
+| Flag      | Meaning                                  |
+| --------- | ---------------------------------------- |
+| `-o name` | name the output file (output)            |
+| `-c`      | compile to object file only, do not link |
+| `-Wall`   | show all warnings                        |
+| `-g`      | include debug info for gdb               |
+
+> **`-o` is like Save As** — without it everything saves as `a.out` and overwrites each other. Always use `-o` to keep files organized.
+
+> **`void main()` vs `int main()`:** The lab slides use `void main()` but this is non-standard. Modern C (C99+) requires `int main()` and `return 0`. gcc follows the standard so `void main()` may cause errors or warnings. Always use `int main()`.
+
+---
+
+### Package Management — apt
+
+**apt** stands for **Advanced Package Tool** — it is the package manager for Ubuntu/Debian Linux. Think of it as the app store for the terminal.
+
+```bash
+sudo apt update                    # refresh list of available packages (always run first)
+sudo apt install build-essential   # installs gcc, g++, make
+sudo apt-get install manpages-dev  # installs man pages for C functions
+sudo apt -y install gdb            # installs debugger (-y = yes to all prompts)
+gcc --version                      # verify installation
+```
+
+> **`apt` vs `apt-get`:** `apt-get` is the older version. They do the same thing. `apt` is preferred now.
+
+> **`sudo` is needed** because installing software affects the whole system, not just your user account — requires admin permissions.
+
+**How apt works with repositories:**
+
+```
+Repository (online warehouse of packages)
+      ↓
+apt update  (refresh what's available)
+      ↓
+apt install (download and install)
+      ↓
+Your PC
+```
+
+Repository addresses are stored in `/etc/apt/sources.list`. Adding a new repo:
+
+```bash
+sudo add-apt-repository ppa:something
+```
+
+**What build-essential installs:**
+
+- `gcc` — C compiler
+- `g++` — C++ compiler
+- `make` — build automation tool
+
+**What manpages-dev gives you:**
+
+```bash
+man printf    # full documentation for printf
+man scanf     # full documentation for scanf
+```
+
+---
+
+### Makefiles
+
+A Makefile automates the compilation process. Instead of typing gcc commands every time, you just type `make`.
+
+**Build process:**
+
+```
+Source files (.c) → Compiler (-c flag) → Object files (.o) → Linker → Executable
+```
+
+**Basic Makefile format:**
+
+```makefile
+target: dependencies
+[TAB] command
+```
+
+> **Critical:** Indentation MUST be a TAB not spaces — make will throw an error with spaces.
+
+**Simple example:**
+
+```makefile
+all:
+    gcc main.c -o program
+```
+
+**With dependencies (only recompiles changed files):**
+
+```makefile
+all: hello
+
+hello: main.o factorial.o hello.o
+    gcc main.o factorial.o hello.o -o hello
+
+main.o: main.c
+    gcc -c main.c
+
+factorial.o: factorial.c
+    gcc -c factorial.c
+
+clean:
+    rm -f *.o hello
+```
+
+**With variables:**
+
+```makefile
+CC=gcc
+CFLAGS=-c -Wall
+SOURCES=main.c hello.c factorial.c
+OBJECTS=$(SOURCES:.c=.o)
+EXECUTABLE=hello
+
+all: $(EXECUTABLE)
+
+$(EXECUTABLE): $(OBJECTS)
+    $(CC) $(OBJECTS) -o $@
+
+.c.o:
+    $(CC) $(CFLAGS) $< -o $@
+
+clean:
+    rm -f $(OBJECTS) $(EXECUTABLE)
+```
+
+**Key Makefile concepts:**
+
+| Concept            | Example            | Meaning                                 |
+| ------------------ | ------------------ | --------------------------------------- |
+| Variable           | `CC=gcc`           | reusable value                          |
+| Use variable       | `$(CC)`            | dereference variable                    |
+| Auto variable `$@` | target name        | e.g. `main.o`                           |
+| Auto variable `$<` | first dependency   | e.g. `main.c`                           |
+| Substitution       | `$(SOURCES:.c=.o)` | replace `.c` with `.o` in all filenames |
+| Pattern rule       | `.c.o:`            | how to convert any `.c` to `.o`         |
+
+**`$(SOURCES:.c=.o)` explained:**
+
+```
+SOURCES = main.c    hello.c    factorial.c
+                ↓          ↓            ↓
+OBJECTS = main.o    hello.o    factorial.o
+```
+
+Acts like find-and-replace for file extensions. Add a new `.c` file to SOURCES and OBJECTS updates automatically.
+
+**`$<` and `$@` in pattern rule:**
+
+```makefile
+.c.o:
+    $(CC) $(CFLAGS) $< -o $@
+# expands to:
+# gcc -c -Wall main.c -o main.o
+#              ↑           ↑
+#              $<          $@
+#         (dependency)  (target)
+```
+
+**`.c.o:` is a special suffix rule** — not a regular target. Make recognizes two extensions as a conversion rule meaning "for ANY .c file that needs to become a .o file, use this rule." Modern equivalent:
+
+```makefile
+%.o: %.c         # newer syntax, same meaning
+    $(CC) $(CFLAGS) $< -o $@
+```
+
+**Dependencies are files OR other targets:**
+
+```
+make sees a dependency → is it a file that exists?
+    YES → use it
+    NO  → look for a target rule to create it
+```
+
+**make flags:**
+
+| Command                    | Meaning                                       |
+| -------------------------- | --------------------------------------------- |
+| `make`                     | looks for file named `Makefile` automatically |
+| `make -f MyMakefile`       | use specific file (`-f` = file)               |
+| `make clean`               | run the clean target                          |
+| `make -f Makefile-2 clean` | run clean in specific makefile                |
+
+**Execution order make follows:**
+
+```
+1. look at target
+2. check dependencies exist
+3. if dependency missing → find rule to create it
+4. if .c newer than .o → recompile
+5. link everything together
+```
+
+**clean target:**
+
+```makefile
+clean:
+    rm -f *.o hello     # ✅ correct — only removes .o files
+    rm -rf *o hello     # ⚠️ dangerous — removes ANYTHING ending in letter o
+```
+
+> **Wildcard warning:** `*o` means anything ending with the letter `o` (matches `hello`, `video` etc). `*.o` means anything ending with `.o` specifically. Always use `*.o` not `*o`.
+
+> **On Linux vs Windows:** The output of linking is just `hello` with no extension. On Windows it would be `hello.exe`. The `-o` flag names the output file.
+
+---
+
+### Pointers
+
+```c
+int x = 420;
+int *pointer = &x;   // pointer holds the ADDRESS of x
+```
+
+**Memory layout:**
+
+```
+x
+420
+pointer = 0x31
+0x31  0x32  0x33  0x34
+```
+
+**argv is an array of pointers:**
+
+```c
+char* argv[]
+// [] → array of
+// *  → pointers to
+// char → characters (strings)
+
+argv[0] → points to → "hello\0"
+argv[1] → points to → "5\0"
+argv[2] → points to → "10\0"
+```
+
+> **argv contains pointers, not the data itself.** This is why arguments are always strings — argv stores pointers to character arrays, so even the number 5 is stored as the string "5".
+
+**Casting argv — common mistake:**
+
+```c
+(int)argv[3]      // casts memory ADDRESS → garbage large number
+(int)*argv[3]     // gets first char's ASCII value → '5' becomes 53, not 5
+atoi(argv[3])     // correctly parses string "5" → 5  ✅
+```
+
+> **Why printf("%s", argv[3]) works but cast doesn't:** `%s` tells printf to follow the pointer and read characters. A cast just reinterprets the raw pointer address as an integer — no string parsing involved.
+
+---
+
+### Memory Allocation
+
+**Three types:**
+
+| Type   | Size known?             | Lifetime                  | Example                  |
+| ------ | ----------------------- | ------------------------- | ------------------------ |
+| Stack  | yes (compile time)      | during function call only | local variables          |
+| Static | yes (compile time)      | entire program            | global, static variables |
+| Heap   | no (decided at runtime) | you control it            | `malloc()`               |
+
+**Stack — LIFO (Last In First Out):**
+
+```
+main() called       → added to stack
+funcA() called      → added on top
+funcB() called      → added on top
+funcB() ends        → removed
+funcA() ends        → removed
+main() ends         → removed
+```
+
+> **Stack overflow** happens when too many function calls fill the stack — usually from infinite recursion.
+
+**Static keyword:**
+
+```c
+void counter(){
+    static int count = 0;  // keeps its value between calls
+    int x = 0;             // resets every call (stack)
+    count++;
+    x++;
+    printf("count=%d x=%d", count, x);
+}
+counter();  // count=1 x=1
+counter();  // count=2 x=1
+counter();  // count=3 x=1
+```
+
+**Dynamic allocation functions (all in `<stdlib.h>`):**
+
+```c
+void *malloc(size_t bytes);          // allocate memory
+void *calloc(size_t n, size_t size); // allocate + initialize to zero
+void *realloc(void *ptr, size_t new_size); // resize existing allocation
+void free(void *p);                  // release memory
+size_t sizeof(type);                 // get byte size of a type
+```
+
+**malloc example:**
+
+```c
+int *ids = malloc(sizeof(int) * 40);  // space for 40 ints
+ids[0] = 5;
+free(ids);   // always free!
+```
+
+**realloc — resize existing memory:**
+
+```c
+// safe pattern — always use a temp pointer
+int *temp = realloc(ids, sizeof(int) * 10);
+if(temp == NULL){
+    free(ids);   // original still safe
+} else {
+    ids = temp;  // success
+}
+```
+
+> **realloc behavior:** If enough space exists next to current allocation it extends in place. Otherwise it allocates a new block, copies old data, frees old block — all automatically. Always assign to a temp pointer first in case it fails.
+
+> **Memory leak:** Forgetting `free()` means memory stays occupied even after the program doesn't need it — can slow down or crash the program over time.
+
+**`static` on a function — file scope:**
+
+```c
+static char** read_file_lines(...)
+```
+
+Means the function is only visible inside the same `.c` file. Used to:
+
+- hide internal helper functions (private vs public API)
+- prevent naming conflicts between files
+- signal intent — "this is internal plumbing"
+
+> **C vs C++ static:** In C, `static` on a function only means file scope restriction. In C++, `static` on a class member means it belongs to the class not an instance. C++ inherited the C meaning and added its own on top.
+
+---
+
+### String Handling — string.h
+
+```c
+#include <string.h>
+```
+
+| Function                  | Purpose                                 | Safe version               |
+| ------------------------- | --------------------------------------- | -------------------------- |
+| `strlen(str)`             | string length (not counting `\0`)       | —                          |
+| `strcpy(dest, src)`       | copy string                             | `strncpy(dest, src, size)` |
+| `strcat(dest, src)`       | concatenate strings                     | `strncat(dest, src, size)` |
+| `strcmp(a, b)`            | compare strings (0=equal)               | `strncmp(a, b, n)`         |
+| `strchr(str, ch)`         | find character, returns pointer or NULL | —                          |
+| `strstr(str, sub)`        | find substring, returns pointer or NULL | —                          |
+| `strdup(str)`             | duplicate string on heap (must free!)   | —                          |
+| `memset(ptr, val, size)`  | fill memory with value                  | —                          |
+| `memcpy(dest, src, size)` | copy memory block                       | —                          |
+
+> **Always prefer `n` versions:** `strcpy` → `strncpy`, `strcat` → `strncat`. The `n` versions respect buffer size limits and prevent overflow.
+
+**atoi — ASCII to Integer (`<stdlib.h>`):**
+
+```c
+atoi("42")      // → 42
+atoi("-5")      // → -5
+atoi("3.14")    // → 3 (stops at decimal point)
+atoi("abc")     // → 0 (can't convert)
+atoi("42abc")   // → 42 (stops at first non-numeric)
+```
+
+> **Problem with atoi:** Returns 0 for both `"0"` (valid) and `"abc"` (error) — can't tell them apart. Use `strtol` for safer conversion.
+
+**snprintf — safe string formatting:**
+
+```c
+char buffer[50];
+snprintf(buffer, sizeof(buffer), "Name: %s Age: %d", name, age);
+```
+
+> **Never use `sprintf`** — it doesn't check buffer size and causes overflow. Always use `snprintf` which stops at the size limit.
+
+---
+
+### File Handling — stdio.h
+
+**Opening files:**
+
+```c
+FILE* file = fopen(filename, mode);
+```
+
+| Mode   | File exists    | File missing | Notes        |
+| ------ | -------------- | ------------ | ------------ |
+| `"r"`  | opens ✅       | NULL ❌      | read only    |
+| `"w"`  | overwrites ⚠️  | creates ✅   | write        |
+| `"a"`  | adds to end ✅ | creates ✅   | append       |
+| `"r+"` | opens ✅       | NULL ❌      | read + write |
+
+> **`"w"` deletes existing content** — if the file exists all its content is wiped. Use `"a"` if you want to keep existing content.
+
+**fgets — reading line by line:**
+
+```c
+char line[256];
+while(fgets(line, sizeof(line), file)){
+    printf("%s", line);
+}
+```
+
+**How fgets works:**
+
+- reads one line at a time
+- stops at `\n`, end of file, or buffer size limit — whichever comes first
+- includes the `\n` in the result
+- returns NULL at EOF
+- each call automatically advances to next line (file pointer moves forward)
+
+**fgets stops at whichever comes first:**
+
+```
+\n  (end of line)    → stops, includes \n in buffer
+256 (buffer full)    → stops WITHOUT \n — line was too long!
+EOF                  → returns NULL
+```
+
+**If line is longer than buffer:**
+
+```
+first fgets  → reads 255 chars (reserves 1 for \0)
+second fgets → reads remaining chars
+```
+
+To detect truncation:
+
+```c
+if(line[strlen(line)-1] != '\n'){
+    // line was longer than buffer!
+}
+```
+
+> **Use 1024 for safety** — SRT subtitle files usually have short lines but 1024 is a common standard buffer size.
+
+**How fgets remembers position — the FILE pointer:**
+
+The `FILE` struct internally stores a **position indicator** — a byte number saying "I am currently at byte X in the file."
+
+```c
+fopen()          // position = 0 (start)
+fgets() call 1   // reads bytes 0-5 → position = 6
+fgets() call 2   // reads bytes 6-11 → position = 12
+fgets() call 3   // reads bytes 12-15 → position = 16 (EOF)
+```
+
+**Useful position functions:**
+
+```c
+rewind(file);              // reset position to byte 0
+ftell(file);               // get current position number
+fseek(file, 0, SEEK_SET);  // jump to start (same as rewind)
+fseek(file, 0, SEEK_END);  // jump to end
+```
+
+**fprintf — writing to files or streams:**
+
+```c
+printf("Hello\n");                 // → stdout
+fprintf(stdout, "Hello\n");        // → stdout (same)
+fprintf(stderr, "Error!\n");       // → stderr
+fprintf(file, "Hello\n");          // → file
+```
+
+> **`printf` is just `fprintf(stdout, ...)`** — the `f` in fprintf stands for file, as it was originally designed to print to any file/stream.
+
+**Always use stderr for error messages:**
+
+```c
+fprintf(stderr, "Error: File does not exist.\n");  // ✅
+printf("Error: File does not exist.\n");            // ❌ goes to stdout
+```
+
+This way error messages still appear in terminal even when stdout is redirected to a file.
+
+**The f-function family:**
+
+| Function   | `f` stands for | Purpose                                       |
+| ---------- | -------------- | --------------------------------------------- |
+| `printf`   | —              | print to stdout                               |
+| `fprintf`  | file           | print to any stream/file                      |
+| `scanf`    | —              | read from stdin                               |
+| `fscanf`   | file           | read from any stream/file                     |
+| `sprintf`  | string         | print to string buffer (dangerous!)           |
+| `snprintf` | string+n       | print to string buffer with size limit (safe) |
+| `sscanf`   | string         | read from string buffer                       |
+
+**Common file handling pattern:**
+
+```c
+// read from one file, write to another
+FILE* input  = fopen(input_filename,  "r");
+FILE* output = fopen(output_filename, "w");
+
+if(input == NULL){
+    fprintf(stderr, "Error: Input file does not exist.\n");
+    return 1;
+}
+if(output == NULL){
+    fprintf(stderr, "Error: Could not create output file.\n");
+    fclose(input);   // close input before returning!
+    return 1;
+}
+
+char line[256];
+while(fgets(line, sizeof(line), input)){
+    fprintf(output, "%s", line);
+}
+
+fclose(input);
+fclose(output);
+```
+
+> **Always close files before returning** — even in error paths. Not closing causes resource leaks.
+
+---
+
+### GDB Debugging
+
+```bash
+gcc -g -o myprogram myprogram.c   # compile with debug info (-g flag required)
+gdb ./myprogram                    # start debugger
+```
+
+**Most used GDB commands:**
+
+| Command         | Short         | Purpose                            |
+| --------------- | ------------- | ---------------------------------- |
+| `run`           | `r`           | start program                      |
+| `run arg1 arg2` | `r arg1 arg2` | start with arguments               |
+| `break 10`      | `b 10`        | breakpoint at line 10              |
+| `break main`    | `b main`      | breakpoint at function             |
+| `info break`    |               | show all breakpoints               |
+| `delete 1`      |               | remove breakpoint 1                |
+| `delete`        |               | remove all breakpoints             |
+| `next`          | `n`           | next line (skip into functions)    |
+| `step`          | `s`           | next line (enter functions)        |
+| `finish`        |               | run until current function returns |
+| `continue`      | `c`           | continue to next breakpoint        |
+| `print x`       | `p x`         | print variable value               |
+| `set var x = 5` |               | assign value to variable           |
+| `watch x`       |               | stop when x changes                |
+| `info watch`    |               | show watched variables             |
+| `backtrace`     | `where`       | show call stack                    |
+| `frame`         |               | show current function and line     |
+| `list`          | `l`           | display source code                |
+| `list main`     | `l main`      | show code for specific function    |
+| `quit`          | `q`           | exit gdb                           |
+
+> **`next` vs `step`:** `next` skips over function calls, `step` goes inside them.
+
+---
+
+### Common Mistakes in C
+
+```c
+// 1. semicolon after function body
+int foo(){ }; // ❌ unnecessary (structs need it, functions don't)
+int foo(){ }  // ✅
+
+// 2. forgetting & in scanf
+scanf("%d", x);   // ❌ crashes
+scanf("%d", &x);  // ✅
+
+// 3. message inside scanf
+scanf("enter: %d", &x);  // ❌ message ignored, confusing
+printf("enter: ");
+scanf("%d", &x);          // ✅
+
+// 4. wrong width specifier
+printf("%6s", str);   // ❌ if you want truncation
+printf("%.6s", str);  // ✅ truncates to 6 chars
+
+// 5. casting argv instead of parsing
+(int)argv[1]      // ❌ casts memory address → garbage
+atoi(argv[1])     // ✅ parses string to integer
+
+// 6. forgetting rewind after counting lines
+while(fgets(...))count++;   // file pointer now at EOF
+// must call rewind(file) before reading again!
+
+// 7. not closing file before early return
+if(n > count){
+    return 1;           // ❌ file never closed!
+    fclose(file);
+    return 1;           // ✅ close before return
+}
+
+// 8. sprintf instead of snprintf
+sprintf(buf, "%s", str);              // ❌ dangerous, buffer overflow
+snprintf(buf, sizeof(buf), "%s", str); // ✅ safe
+
+// 9. using *o instead of *.o in makefile clean
+rm -rf *o hello    // ❌ deletes anything ending in letter o
+rm -f *.o hello    // ✅ only deletes .o files
+
+// 10. forgetting free
+int* p = malloc(sizeof(int) * 40);
+// ... use p ...
+// forgot free(p) → memory leak ❌
+free(p);  // ✅ always free
+
+// 11. using realloc directly on original pointer
+ids = realloc(ids, new_size);   // ❌ if fails, ids becomes NULL, original lost
+int* temp = realloc(ids, new_size);  // ✅ safe pattern
+if(temp) ids = temp;
+```
+
+---
+
+### C vs C++ Quick Comparison
+
+| Feature              | C                         | C++                                  |
+| -------------------- | ------------------------- | ------------------------------------ |
+| `bool` type          | needs `<stdbool.h>`       | built in                             |
+| `malloc` return      | auto converts `void*`     | must cast `(int*)malloc(...)`        |
+| `static` on function | file scope only           | file scope OR class member           |
+| Standard library     | `<stdio.h>`, `<stdlib.h>` | also `<iostream>`, `std::string` etc |
+| Compile with         | `gcc`                     | `g++`                                |
+| String type          | `char*` arrays manually   | `std::string`                        |
+
+> **C++ is a superset of C** — all C code is valid C++, but C++ adds classes, templates, STL, and more. Use `g++` to compile C++ source code.
+
+---
+
+### Naming Reference — C Functions
+
+| Name       | Stands For                     |
+| ---------- | ------------------------------ |
+| `argc`     | Argument Count                 |
+| `argv`     | Argument Values (Vector)       |
+| `printf`   | Print Formatted                |
+| `scanf`    | Scan Formatted                 |
+| `fprintf`  | File Print Formatted           |
+| `fgets`    | File Get String                |
+| `fopen`    | File Open                      |
+| `fclose`   | File Close                     |
+| `malloc`   | Memory Allocate                |
+| `realloc`  | Re-Allocate                    |
+| `calloc`   | Clear Allocate (zeroed)        |
+| `atoi`     | ASCII To Integer               |
+| `snprintf` | String N Print Formatted       |
+| `strlen`   | String Length                  |
+| `strcpy`   | String Copy                    |
+| `strcmp`   | String Compare                 |
+| `strcat`   | String Concatenate             |
+| `strchr`   | String Character (find)        |
+| `strstr`   | String String (find substring) |
+| `strdup`   | String Duplicate               |
+| `memset`   | Memory Set                     |
+| `memcpy`   | Memory Copy                    |
+| `rewind`   | Rewind (back to start)         |
+| `ftell`    | File Tell (current position)   |
+| `fseek`    | File Seek (jump to position)   |
+| `apt`      | Advanced Package Tool          |
+| `gcc`      | GNU C Compiler                 |
+| `gdb`      | GNU Debugger                   |
+
 **END OF GUIDE** 🎓
 
 This comprehensive guide covers everything from the foundational concepts of how Linux works to advanced bash scripting techniques, common pitfalls, and best practices. Keep it as a reference for your computer engineering journey!
