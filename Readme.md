@@ -3484,6 +3484,1504 @@ if(temp) ids = temp;
 | `gcc`      | GNU C Compiler                 |
 | `gdb`      | GNU Debugger                   |
 
+---
+
+# 🔧 Operating Systems — Process Management
+
+> A deep-dive into UNIX process management, system calls, virtual memory, scheduling, and file handling under the hood. Built from real questions, common confusions, and first-principles thinking.
+
+---
+
+## 📚 Table of Contents
+
+29. [What is a Process?](#29-what-is-a-process)
+30. [Program vs Process](#30-program-vs-process)
+31. [Process Memory Layout](#31-process-memory-layout)
+32. [Static Variables and the Data Segment](#32-static-variables-and-the-data-segment)
+33. [Virtual Memory — Why It Exists](#33-virtual-memory--why-it-exists)
+34. [Page Tables](#34-page-tables)
+35. [Process States in UNIX](#35-process-states-in-unix)
+36. [Process Creation — 4 Ways](#36-process-creation--4-ways)
+37. [Process Termination](#37-process-termination)
+38. [PCB — Process Control Block](#38-pcb--process-control-block)
+39. [System Calls — The Bridge to the Kernel](#39-system-calls--the-bridge-to-the-kernel)
+40. [fork() — Cloning a Process](#40-fork--cloning-a-process)
+41. [wait() — Synchronizing with Children](#41-wait--synchronizing-with-children)
+42. [exit() — Terminating a Process](#42-exit--terminating-a-process)
+43. [execl() — Replacing a Process](#43-execl--replacing-a-process)
+44. [nice() — Scheduling Priority](#44-nice--scheduling-priority)
+45. [Orphan and Zombie Processes](#45-orphan-and-zombie-processes)
+46. [The UNIX Scheduler](#46-the-unix-scheduler)
+47. [ps and top Commands](#47-ps-and-top-commands)
+48. [fopen Under the Hood](#48-fopen-under-the-hood)
+49. [fork() + Files — What Gets Shared](#49-fork--files--what-gets-shared)
+50. [fork() + Heap Memory — COW](#50-fork--heap-memory--cow)
+51. [Lab Code Walkthroughs](#51-lab-code-walkthroughs)
+52. [Common Mistakes in Process Management](#52-common-mistakes-in-process-management)
+53. [Naming Reference — OS Functions](#53-naming-reference--os-functions)
+
+---
+
+## 29. What is a Process?
+
+A **process** is a running instance of a program. The OS keeps track of every process using a **process table** — each process gets a unique **PID** (Process ID).
+
+```
+Program on disk (passive)   →   Process in RAM (active)
+exe file sitting there      →   Running instance with memory, state, identity
+```
+
+Each process has 5 components:
+
+| Component      | What it holds                                   |
+| -------------- | ----------------------------------------------- |
+| **Code**       | The instructions to execute                     |
+| **Data**       | Global and static variables                     |
+| **Stack**      | Temporary data, function calls, local variables |
+| **User Area**  | Open files, signal handlers, CPU info           |
+| **Page Table** | Virtual → physical memory translation map       |
+
+---
+
+## 30. Program vs Process
+
+> **Common confusion:** "Aren't a program and a process both just code?"
+
+**No.** A program is passive — just bytes sitting on disk. A process is the program brought to life in RAM with real resources.
+
+```
+Program = recipe (just text, does nothing)
+Process = actually cooking (uses stove, ingredients, time)
+```
+
+**Why you need a process and can't just "run the code" directly:**
+
+The code alone has no context. A process gives the code:
+
+- Its own **memory space** — where variables live
+- A **stack** — to track function calls
+- A **state** — running? sleeping? waiting?
+- An **identity** — PID, owner, permissions
+- **Resources** — open files, I/O, signals
+
+**The same program can become multiple processes:**
+
+```
+chrome.exe on disk = one file
+Open Chrome 3 times = 3 separate processes
+Each with own tabs, memory, state
+All from the same single program file
+```
+
+**Does the process edit the original program on disk?**
+
+Never. The OS copies needed parts into RAM and works entirely from that copy. The disk file stays untouched — it's read-only from the process's perspective.
+
+> **If you change a username in an app and it affects other sessions** — that's not the process editing the code. It's the process writing to a **shared database or file** on disk. The code itself is never touched. Other processes see the change because they all read from the same data source.
+
+---
+
+## 31. Process Memory Layout
+
+```
+Process Virtual Memory:
+┌─────────────────┐  ← high address
+│   Stack         │  temporary, grows downward
+│   (local vars)  │  dies when function returns
+├─────────────────┤
+│   Heap          │  dynamic (malloc), grows upward
+├─────────────────┤
+│   Data Segment  │  global + static variables
+│                 │  lives entire program lifetime
+├─────────────────┤
+│   Code Segment  │  the executable instructions
+└─────────────────┘  ← low address
+```
+
+**Stack vs Heap vs Data:**
+
+```c
+int globalCounter = 0;    // DATA segment — lives entire program
+static int y = 10;        // DATA segment — lives entire program
+
+int main() {
+    int x = 5;            // STACK — dies when main() returns
+    int* p = malloc(100); // HEAP  — lives until free() is called
+}
+```
+
+**User Area** contains:
+
+- Which files are currently open (open file table)
+- Signal handling rules (what to do on kill, alarm, etc.)
+- CPU register values (saved when process is switched out)
+
+**Page Table** maps virtual addresses → physical RAM addresses (explained in section 34).
+
+---
+
+## 32. Static Variables and the Data Segment
+
+> **Common confusion:** "I put `int x = 5` inside main() — why is it on the stack not the data segment?"
+
+It's not about **where in the file** you wrote it. It's about **lifetime**.
+
+```c
+int globalCounter = 0;    // data segment — lives entire program
+
+int main() {
+    int x = 5;            // STACK — temporary, dies when main returns
+    static int y = 10;    // DATA  — lives entire program despite being inside main!
+}
+```
+
+The `static` keyword forces a variable into the data segment regardless of where it's declared.
+
+**Why static exists — the problem it solves:**
+
+```c
+// WITHOUT static — resets every call:
+void countClicks() {
+    int counter = 0;   // created fresh every call
+    counter++;
+    printf("%d", counter);  // always prints 1!
+}
+
+// WITH static — remembers between calls:
+void countClicks() {
+    static int counter = 0;  // created once, stays alive
+    counter++;
+    printf("%d", counter);  // prints 1, 2, 3...
+}
+```
+
+**Static vs Global:**
+
+```
+Global: anyone anywhere can access and accidentally modify it ❌
+Static: persists like a global BUT locked to its own scope ✓
+```
+
+```c
+int counter = 0;  // global — any function can reset this!
+
+void someOtherFunction() {
+    counter = 0;  // oops, accidentally reset it
+}
+```
+
+Static gives you **persistence with protection** — the best of both worlds.
+
+**Static in classes (C++):**
+
+```cpp
+class Player {
+public:
+    static int playerCount = 0;  // shared across ALL instances
+    Player() { playerCount++; }
+};
+
+Player p1;  // playerCount = 1
+Player p2;  // playerCount = 2
+// same concept — one value living for entire program lifetime
+```
+
+> **The rule:** `static` = "I need a permanent apartment, not a temporary Airbnb room." Goes to data segment, regardless of where you declared it. But the **scope** (who can access it) stays local.
+
+---
+
+## 33. Virtual Memory — Why It Exists
+
+> **Common question:** "Why can't I just give each process real physical addresses directly?"
+
+Early computers did exactly that — and it was a disaster. Here's why virtual memory was invented:
+
+### Problem 1 — Security
+
+```
+Without virtual memory:
+Process 1 (bank app) at address 0x001
+Process 2 (virus) just does:
+int* steal = (int*)0x001  → reads bank app memory directly!
+```
+
+With virtual memory, each process only sees its own fake address space. The OS controls the page table — no process can reach another's memory. It's **physically impossible** at the hardware level.
+
+### Problem 2 — Programs need to be compiled to specific addresses
+
+Without virtual memory, every program would need to know at compile time exactly where in RAM it will be loaded. Impossible because:
+
+```
+Today you run: Chrome + VSCode + Spotify
+Tomorrow: Chrome + Discord + Game
+Next day: just VSCode
+
+Different combinations → different available spaces →
+you'd have to recompile every program every time!
+```
+
+With virtual memory, every program compiles assuming it starts at address 0. The page table maps it to wherever RAM is free.
+
+### Problem 3 — Fragmentation
+
+```
+RAM without virtual memory:
+├── 0x000 - 0x100  USED
+├── 0x100 - 0x200  FREE (100 units)
+├── 0x200 - 0x400  USED
+├── 0x400 - 0x500  FREE (100 units)
+└── 0x500 - 0x600  FREE (100 units)
+
+New process needs 250 units of CONTIGUOUS memory → FAILS!
+Even though 300 units are free total.
+```
+
+With pages, free frames can be scattered anywhere but still appear contiguous to the process.
+
+### Problem 4 — RAM is too small
+
+```
+Without virtual memory:
+RAM = 4GB, Program = 6GB → simply cannot run
+
+With virtual memory + swapping:
+OS loads only needed pages into RAM
+Pushes unused pages to disk
+Program runs fine!
+```
+
+### The key insight
+
+```
+The process NEVER knows its physical address.
+        ↓
+OS sits in the middle controlling everything through the page table.
+        ↓
+A process has NO mechanism to ask "what is my physical address?"
+        ↓
+The CPU itself enforces this at hardware level.
+```
+
+**Virtual memory in one sentence:** Every process lives in a completely isolated world controlled entirely by the OS, with no escape route to physical memory whatsoever.
+
+---
+
+## 34. Page Tables
+
+**The problem:** Process thinks linearly. RAM is scattered.
+
+```c
+int arr[3];
+arr[0]  // address 100
+arr[1]  // address 104  (just +4)
+arr[2]  // address 108  (just +4)
+```
+
+The CPU calculates next address by simple addition. It has no idea how to jump around scattered physical locations. Virtual memory creates the illusion of contiguity.
+
+**How pages work:**
+
+```
+Virtual Memory          Physical RAM
+┌──────────┐            ┌──────────┐
+│ Page 1   │ ────────→  │ Frame 5  │
+├──────────┤            ├──────────┤
+│ Page 2   │ ────────→  │ Frame 2  │
+├──────────┤            ├──────────┤
+│ Page 3   │ ────────→  │ Frame 9  │
+└──────────┘            └──────────┘
+
+- Virtual memory divided into pages
+- Physical RAM divided into frames
+- Page table maps pages → frames
+- Pages don't need to be contiguous in RAM!
+```
+
+**Dynamic memory with page tables:**
+
+```
+Process needs MORE memory:
+OS finds any free frames anywhere in RAM
+Adds new virtual pages → mapped to those frames
+Process sees contiguous virtual addresses
+Nobody else affected
+
+Process needs LESS memory:
+OS unmaps pages
+Frames returned to free pool
+Available for other processes immediately
+```
+
+**Swapping — when RAM is full:**
+
+```
+RAM is full, process needs more
+        ↓
+OS finds a page not used recently
+Moves it from RAM → disk
+That frame is now free
+        ↓
+When process needs that page back:
+OS loads from disk → any free frame
+Updates page table
+Process has no idea this happened!
+```
+
+**The process's perspective:**
+
+```
+"I have pages 1, 2, 3, 4, 5"
+"They all feel contiguous to me"
+"Some might be in RAM, some on disk — I don't care"
+
+Reality: completely scattered, some on disk, OS juggling everything
+```
+
+> **Virtual memory in one line:** "Don't worry about the physical place — here are some contiguous virtual pages and I'll handle them."
+
+---
+
+## 35. Process States in UNIX
+
+```
+fork()
+  ↓
+Ready/Runnable  ←─────────────────────┐
+  ↓ dispatched                         │ preempted
+Running ─────────────────────────────→─┘
+  │
+  ├── Blocked/Waiting  (sleeping, waiting for event)
+  │         ↓ event occurs
+  │       Ready again
+  │
+  └── Exited/Terminated
+            ↓
+          Zombie ──── cleaned by wait() ────→ gone
+            ↓ if parent dies first
+          Orphan
+            ↓ reparented to init (PID 1)
+          init calls wait() → cleaned
+```
+
+| State        | Meaning                                            |
+| ------------ | -------------------------------------------------- |
+| **Running**  | Currently using the CPU                            |
+| **Ready**    | Could run anytime, waiting for CPU                 |
+| **Sleeping** | Waiting for an event (like I/O or wait())          |
+| **Stopped**  | Frozen by a signal                                 |
+| **Zombie**   | Finished but exit code not collected by parent yet |
+| **Orphan**   | Parent died before child finished                  |
+
+---
+
+## 36. Process Creation — 4 Ways
+
+```
+1. System initialization
+   └── OS boots → creates init (PID 1) + system services
+       before you even see the desktop
+
+2. fork() system call
+   └── a running process clones itself
+       most common in UNIX
+
+3. User request
+   └── you double-click an app or type ./myprogram
+       OS creates a process for it
+
+4. Batch job
+   └── scheduled task runs automatically at set time
+       like a cron job — nobody clicked anything
+```
+
+**What happens internally for any creation:**
+
+```
+1. Create new PCB entry → assigns unique PID
+2. Allocate memory → sets up code, stack, data, user area, page table
+3. Copy parent info (if forked) → child inherits parent's environment
+4. Add to process table → scheduler can now see it
+5. Return PID → parent gets child PID, child gets 0
+```
+
+**Process hierarchy:**
+
+```
+init (PID 1)              ← created at boot, no parent
+├── bash (PID 14)         ← your terminal
+│   ├── chrome (PID 100)
+│   └── myprogram (PID 101)
+│       └── child (PID 102)
+└── system services
+```
+
+Every single process traces back to **init (PID 1)**. It's the only process with no parent.
+
+---
+
+## 37. Process Termination
+
+```
+4 ways a process can end:
+├── Normal exit      → return 0 from main, or exit(0)
+├── Error exit       → exit(1) or some non-zero code
+├── Fatal error      → segfault, divide by zero, unhandled signal
+└── Killed           → kill -9 <pid> from another process
+```
+
+---
+
+## 38. PCB — Process Control Block
+
+The PCB is a data structure the OS keeps for every process — the process's complete profile.
+
+```
+PCB for Process 101:
+├── PID          → 101
+├── PPID         → 100 (parent)
+├── State        → running/sleeping/zombie
+├── CPU registers → exactly where it was when switched out
+├── Program counter → which instruction is next
+├── Stack pointer → where its stack is
+├── Page Table   → virtual → physical memory map
+├── Open files   → which files it has open
+├── Signal handlers → what to do on signals
+└── Priority/nice → how much CPU time to give it
+```
+
+**Why PCB is essential — context switching:**
+
+```
+Chrome running on CPU
+    ↓
+Scheduler: "time's up, Spotify's turn"
+    ↓
+OS saves Chrome's ENTIRE state to Chrome's PCB:
+├── which instruction was executing
+├── all register values
+└── stack pointer
+    ↓
+Load Spotify's state from Spotify's PCB
+    ↓
+Spotify runs as if nothing happened
+    ↓
+... repeats hundreds of times per second
+```
+
+Without PCB the OS would have nowhere to save state — like waking up with amnesia every time a process gets CPU back.
+
+```
+fork()   → creates new PCB
+wait()   → removes child's PCB after it exits
+exit()   → marks PCB as zombie until parent collects
+nice()   → updates priority field in the PCB
+ps/top   → reads from the process table (all PCBs)
+```
+
+> **Analogy:** PCB is a hospital patient's file. Without it the doctor (OS) has no idea what was happening and has to start from scratch every time.
+
+---
+
+## 39. System Calls — The Bridge to the Kernel
+
+Processes run in **User Mode** — restricted, can only access their own data. But sometimes they need to do things only the kernel can do (create processes, read files, allocate memory).
+
+A **system call** is the formal mechanism to ask the kernel for help:
+
+```
+Process (user mode)
+    ↓
+"hey kernel, I need something"  ← system call
+    ↓
+CPU switches to kernel mode
+Kernel validates the request
+Kernel does the privileged work
+CPU switches back to user mode
+Result returned to process
+```
+
+> **Analogy:** You can't go behind the bank counter yourself. You fill out a form (system call), the teller (kernel) does the work behind the barrier, and hands you back the result.
+
+**Why system calls are safe:**
+
+```
+You (process)  → never enter kernel mode yourself
+Kernel         → validates BEFORE doing anything
+CPU hardware   → physically enforces the boundary
+Result         → either success or safe -1 (failure)
+```
+
+**System call vs normal function:**
+
+```
+Normal function:  runs inside your process memory, user mode
+System call:      crosses into kernel mode, privileged work
+                  fork, wait, execl, exit, nice, open, read...
+```
+
+---
+
+## 40. fork() — Cloning a Process
+
+`fork()` creates an exact copy of the current process. One process goes in, two come out.
+
+```c
+pid_t pid = fork();
+
+if(pid == -1) {
+    // fork FAILED — no child created
+} else if(pid == 0) {
+    // I am the CHILD — fork returned 0 to me
+} else {
+    // I am the PARENT — fork returned child's actual PID
+}
+```
+
+> **Common confusion:** "Shouldn't the child's PID be 0?"
+
+**No!** The 0 is just fork's **return value** — a flag saying "you are the child." The child's actual PID is still a real number. `getpid()` gives the real PID.
+
+```c
+if(pid == 0) {
+    printf("%d", pid);      // prints 0  (fork's return value, just a flag)
+    printf("%d", getpid()); // prints 101 (actual real PID!)
+}
+```
+
+**What gets copied:**
+
+```
+Parent Process:              Child Process (copy):
+├── Code          →          ├── Code          (same)
+├── Stack         →          ├── Stack         (same values)
+├── Data          →          ├── Data          (same values)
+├── Heap          →          ├── Heap          (independent copy via COW)
+├── User Area     →          ├── User Area     (same)
+├── Page Table    →          ├── Page Table    (own copy)
+└── PID = 100     →          └── PID = 101     (different!)
+                                 PPID = 100    (parent's PID)
+```
+
+**After fork — completely independent:**
+
+```c
+int x = 10;
+pid_t pid = fork();
+
+if(pid == 0) {
+    x = 999;           // child changes x
+    printf("%d", x);   // prints 999
+} else {
+    printf("%d", x);   // prints 10! parent unaffected
+}
+```
+
+Variables declared before fork are already in the child's memory — fork copies the **entire snapshot** at that moment. The child wakes up with everything already there, not a blank slate.
+
+**Why fork exists:**
+
+```c
+// Web server pattern — handles multiple users simultaneously:
+while(1) {
+    wait_for_connection();
+
+    if(fork() == 0) {
+        handle_this_user();  // child handles ONE user
+        exit(0);
+    }
+    // parent loops back immediately to accept next user
+}
+```
+
+```
+Without fork: User 1 → wait → User 2 → wait → User 3 (sequential, unusable)
+With fork:    User 1 → child 1
+              User 2 → child 2    ← all simultaneously!
+              User 3 → child 3
+```
+
+**Forking in a loop for parallel work:**
+
+```c
+pid_t children[n];
+
+// spawn all workers
+for(int i = 0; i < n; i++) {
+    children[i] = fork();
+    if(children[i] == 0) {
+        do_work(chunk[i]);
+        exit(result);
+    }
+}
+
+// collect results IN ORDER using waitpid
+for(int i = 0; i < n; i++) {
+    waitpid(children[i], &status, 0);  // wait for SPECIFIC child
+    results[i] = WEXITSTATUS(status);
+}
+```
+
+> **Never put waitpid inside the fork loop** — it makes everything sequential. Fork all first, then collect. The whole point is getting all workers running simultaneously before collecting.
+
+**fork() is not dangerous because:**
+
+```
+fork() only:
+├── copies YOUR OWN process   → no other process touched
+├── allocates new memory      → kernel controls safely
+├── creates new PCB           → kernel owns process table
+└── returns two integers      → harmless
+```
+
+---
+
+## 41. wait() — Synchronizing with Children
+
+`wait()` makes the parent **block** until a child finishes, then collects its exit code and cleans up its PCB entry.
+
+```c
+pid_t var_1 = wait(&var_2);
+// var_1 = PID of child that finished
+// var_2 = raw status (contains exit code packed in)
+```
+
+**What happens internally:**
+
+```
+parent calls wait()
+        ↓
+kernel blocks parent: "sleep until a child finishes"
+        ↓
+child calls exit(42)
+        ↓
+kernel wakes parent: "your child just finished!"
+        ↓
+kernel removes child's PCB from process table
+        ↓
+returns to parent:
+├── child's PID → var_1
+└── exit status → var_2
+```
+
+**The status byte structure:**
+
+```
+var_2 (raw integer from wait):
+[  exit code (bytes 1-3)  ]  [  how it exited (byte 4)  ]
+
+byte 4 = 0 → exited normally (called exit() or return)
+byte 4 ≠ 0 → killed by signal
+
+stat_loc & 0x00FF  → isolates byte 4 (check if normal exit)
+stat_loc >> 8      → extracts exit code (throws away byte 4)
+```
+
+**Macros that do the same thing:**
+
+```c
+// manual:
+if(!(stat_loc & 0x00FF))
+    printf("%d", stat_loc >> 8);
+
+// using macros (identical result):
+if(WIFEXITED(stat_loc))
+    printf("%d", WEXITSTATUS(stat_loc));
+```
+
+> **WIFEXITED** = "Wait — If — Exited normally?" → yes/no
+> **WEXITSTATUS** = "Wait — Exit — Status" → the actual code
+
+Always check `WIFEXITED` before `WEXITSTATUS` — no point reading exit code if process was killed by signal.
+
+**wait() handles both cases:**
+
+```
+Child still running when wait() called:
+→ parent blocks until child finishes
+
+Child already finished before wait() called:
+→ OS saved the exit code in the zombie
+→ wait() returns IMMEDIATELY with saved status
+→ no blocking needed!
+```
+
+**waitpid() — wait for specific child:**
+
+```c
+waitpid(child2, &status, 0);  // only waits for child2
+// child1 and child3 finishing → parent ignores them
+// child2 finishes → parent wakes up!
+```
+
+**Without wait — zombie problem:**
+
+```
+Child finishes
+        ↓
+OS: "hold on, parent might need your exit code"
+        ↓
+Keeps child's PCB in process table as ZOMBIE
+        ↓
+Parent never calls wait() → zombie stays forever
+        ↓
+Process table fills up → system slows → eventually crashes
+```
+
+> **Zombie vs Orphan:**
+>
+> - **Zombie** = child died, parent hasn't called wait() yet
+> - **Orphan** = parent died, child still running → reparented to init
+
+**When parent dies with unresolved zombies:**
+
+```
+Parent dies
+        ↓
+init (PID 1) inherits all zombies
+        ↓
+init automatically calls wait() → cleaned up!
+```
+
+Zombies are only dangerous in **long-running processes** (servers) that fork many children but never call wait() — zombies accumulate until the process table is full.
+
+---
+
+## 42. exit() — Terminating a Process
+
+```c
+exit(42);  // sends 42 as exit code to parent
+```
+
+**What exit() does:**
+
+```
+1. Runs atexit() handlers
+2. Flushes stdio buffers
+3. Closes all open file descriptors
+4. Releases all memory
+5. Sends SIGCHLD to parent
+6. Passes exit code to parent via wait()
+7. Removes from process table (or becomes zombie if parent not listening)
+```
+
+> **\_exit() vs exit():** `_exit()` skips steps 1-2 (no buffer flushing, no atexit handlers). Use in child after fork to avoid double-flushing stdio buffers.
+
+**Exit code limitation:**
+
+```
+exit code is only 8 bits → max value 255!
+
+exit(300)           → truncated to 44  (300 % 256 = 44)
+WEXITSTATUS = 44    → WRONG!
+```
+
+If your result can exceed 255, use **pipes** or **shared memory** instead of exit codes.
+
+---
+
+## 43. execl() — Replacing a Process
+
+`execl()` **replaces** the current process with a completely different program. Not a copy — the process itself gets overwritten.
+
+```c
+execl("/bin/ps", "ps", "-e", NULL);
+//     path       name  flags  end
+```
+
+| Parameter     | Meaning                                           |
+| ------------- | ------------------------------------------------- |
+| First         | Absolute path to binary on disk                   |
+| Second        | Name of the program (usually same as binary name) |
+| Middle params | Any flags, each in `""` separated by commas       |
+| Last          | Always `NULL` — marks end of arguments            |
+
+**What happens:**
+
+```
+execl() called
+        ↓
+kernel finds /bin/ps on disk
+        ↓
+loads ps into THIS process's memory:
+├── replaces code segment   ← your code is GONE
+├── replaces data segment   ← your variables are GONE
+└── replaces stack          ← your stack is GONE
+        ↓
+starts executing ps from the beginning
+```
+
+**What stays the same:**
+
+```
+REPLACED:                   KEPT:
+├── code segment            ├── PID (same process!)
+├── data segment            ├── PPID
+├── stack                   ├── open files
+└── heap                    └── user area
+```
+
+**Never returns on success:**
+
+```c
+printf("before execl\n");
+execl("/bin/ps", "ps", NULL);
+printf("after execl\n");   // THIS NEVER PRINTS!
+// because the process that would print it no longer exists
+```
+
+Only returns if it **fails** (wrong path, no permission) — returns -1.
+
+**This is why execl is always used WITH fork:**
+
+```c
+if(fork() == 0) {
+    execl("/bin/ps", "ps", "-f", NULL);  // child gets replaced by ps
+} else {
+    wait(NULL);  // parent survives, waits for ps to finish
+}
+```
+
+```
+Without fork: your program → execl → your program GONE
+With fork:    parent → survives
+              child  → execl → replaced by ps → runs → dies
+              parent → wakes from wait → continues
+```
+
+**This is literally how your terminal runs every command:**
+
+```
+bash (parent)
+    ↓ fork()
+child → execl("ls") → replaced by ls → runs → dies
+    ↓ wait()
+bash (parent) → ready for next command
+```
+
+---
+
+## 44. nice() — Scheduling Priority
+
+```c
+nice(10);   // lower priority by 10
+nice(-5);   // raise priority by 5 (superuser only!)
+```
+
+```
+nice value range:
+-20 (highest priority, superuser only)
+  0 (default, normal)
+ 19 (lowest priority)
+
+higher nice = more "generous" = gives CPU to others = less CPU for you
+lower nice  = more "selfish"  = takes CPU = more CPU for you
+```
+
+**getpriority() — read current nice value:**
+
+```c
+#include <sys/resource.h>
+
+getpriority(PRIO_PROCESS, 0)
+// PRIO_PROCESS = get priority of a process
+// 0 = this process itself
+// returns current nice value
+```
+
+**In ps -l output:**
+
+```
+PID   PR   NI   CMD
+100   20    0   process08   ← default
+100   35   15   process08   ← after nice(15)
+
+PR = PR_base + NI   (NI affects actual scheduling priority)
+```
+
+---
+
+## 45. Orphan and Zombie Processes
+
+### Orphan
+
+```
+Parent dies before child finishes
+        ↓
+Child still running, parent is gone
+        ↓
+OS automatically reparents child to init (PID 1)
+        ↓
+init eventually calls wait() → cleans up properly
+```
+
+**Detecting orphan in code:**
+
+```c
+sleep(3);
+printf("parent PID: %d\n", getppid());
+// if this prints 1 → you are an orphan!
+```
+
+**Why orphans are a problem:**
+
+```
+├── Nobody managing the child anymore
+├── Resource leaks (open files, connections)
+├── If child finishes → becomes zombie under init
+├── Loss of control over running process
+└── Accumulation can fill process table
+```
+
+### Zombie
+
+```
+Child finishes
+        ↓
+Parent alive but not calling wait()
+        ↓
+OS keeps child's PCB as zombie:
+├── code not running   → dead
+├── memory freed       → dead
+└── PCB still in table → NOT fully gone
+    exit code preserved → waiting for parent
+```
+
+```bash
+$ ps
+PID    STATE    CMD
+101    Z        myprogram   ← Z = ZOMBIE
+```
+
+**Why zombie exists:** OS is being cautious — doesn't want to throw away the exit code in case parent needs it.
+
+**Resolution:**
+
+```
+Parent calls wait()     → zombie cleaned immediately
+Parent never calls wait() → zombie stays until parent dies
+Parent dies             → init inherits zombie → init cleans it
+```
+
+> **Key insight:** A living but **inattentive parent** is worse than a dead parent. Dead parent → init takes responsibility. Alive parent → OS waits for parent to call wait(). If parent sleeps for 10 seconds first, child is a zombie for those 10 seconds.
+
+---
+
+## 46. The UNIX Scheduler
+
+UNIX uses **multi-level priority + Round Robin** within each level.
+
+**Multi-level priority:**
+
+```
+Priority 0  (highest) → critical system processes
+Priority 10           → normal user processes
+Priority 15  (lowest) → background tasks
+
+Higher priority runs STRICTLY FIRST:
+└── lower priority doesn't get CPU while higher is ready
+```
+
+**Round Robin within same level:**
+
+```
+Priority 10 queue:
+Chrome    → runs 2ms → back of queue
+Spotify   → runs 2ms → back of queue
+VSCode    → runs 2ms → back of queue
+Chrome    → runs 2ms → ...repeats
+
+Each gets a fair time slice. Nobody starves.
+```
+
+**Simultaneous or sequential?**
+
+```
+Different priority levels → sequential (higher goes first)
+Same priority level       → simultaneous illusion (round robin)
+```
+
+In reality, processes at similar priorities all feel simultaneous because the switching happens hundreds of times per second — faster than human perception.
+
+---
+
+## 47. ps and top Commands
+
+```bash
+$ ps          # only YOUR processes in current terminal (static snapshot)
+$ ps -e       # ALL processes on entire system (static snapshot)
+$ ps -f       # full detailed view with extra columns
+$ ps -ef      # full view of everything
+
+$ top         # ALL system processes, live updating view
+```
+
+**ps columns:**
+
+| Column | Meaning                         |
+| ------ | ------------------------------- |
+| PID    | Process ID                      |
+| PPID   | Parent's PID                    |
+| TTY    | Which terminal it's running in  |
+| TIME   | CPU time consumed               |
+| CMD    | Command that started it         |
+| NI     | Nice value (from ps -l)         |
+| STATE  | R=running, S=sleeping, Z=zombie |
+
+**top shows extra:**
+
+```
+%CPU  → how much CPU right now
+%MEM  → how much RAM using
+Tasks summary → total, running, sleeping, stopped, zombie count
+```
+
+> **ps = photo, top = live video**
+
+**Most common real-world use:**
+
+```bash
+# something is slow
+$ top                    # find what's eating CPU
+
+# kill a specific process
+$ ps -e                  # find its PID
+$ kill -9 <PID>          # force kill
+
+# check if your program is running
+$ ps -e | grep myprogram # filter output
+```
+
+---
+
+## 48. fopen Under the Hood
+
+When you call `fopen("file.txt", "r")`, two separate objects are created:
+
+### FILE struct (userspace)
+
+Lives on **your heap**. Created by fopen(), returned as `FILE*`.
+
+```c
+// roughly what FILE looks like:
+struct _IO_FILE {
+    int fd;              // the kernel fd integer (e.g. 3)
+    char buffer[8192];   // userspace buffer (8KB)
+    char* buf_pos;       // where we are in the buffer
+    int buf_level;       // how full the buffer is
+    int flags;           // eof, error, etc.
+};
+```
+
+This is what adds **buffering** on top of raw file access. Actual syscalls only fire when the buffer fills/empties — not on every character.
+
+### struct file (kernel space)
+
+Lives in **kernel memory**. You never touch it directly — only through syscalls.
+
+```
+struct file contains:
+├── offset/cursor    ← current read/write position
+├── open flags       ← O_RDONLY, O_APPEND, etc.
+├── reference count  ← how many fds point to it
+└── pointer to inode ← the actual file on disk
+```
+
+### inode (filesystem/disk)
+
+The file itself. Exists on disk whether anyone has it open or not.
+
+```
+inode contains:
+├── file size
+├── permissions (rwx)
+├── owner (UID, GID)
+├── timestamps
+└── pointers to data blocks on disk
+```
+
+### The full hierarchy:
+
+```
+Your code
+   │
+   ↓
+FILE* f  ──→  [FILE struct — your heap]
+                  fd = 3
+                  buffer = [...]
+                       │ syscall (read, write, lseek)
+                       ↓
+              [struct file — kernel memory]   ← you never touch this
+                  offset = 512
+                  refcount = 1
+                       │
+                       ↓
+              [inode — filesystem on disk]
+                  size, permissions, data blocks
+```
+
+### fd — file descriptor
+
+Just an integer index into the process's fd table. 0, 1, 2 are always stdin, stdout, stderr. Every `open()` gives you the next available integer.
+
+```
+fd = 3  →  just a number
+           OS uses it as a key to look up the struct file in kernel
+```
+
+### fclose() — what it does:
+
+```
+1. Flushes stdio buffer → write() syscall (unwritten data saved)
+2. Calls close(fd) → kernel decrements refcount on struct file
+3. Frees the FILE struct from heap
+4. If refcount hits 0 → kernel frees struct file
+   (inode stays alive on disk regardless)
+```
+
+### Reference counting:
+
+```
+fopen()       → refcount = 1
+fork()        → refcount = 2  (parent + child both hold fd)
+parent close  → refcount = 1
+child close   → refcount = 0  → struct file freed
+```
+
+---
+
+## 49. fork() + Files — What Gets Shared
+
+> **The critical difference between memory and files after fork:**
+
+```
+Memory (heap, stack, etc.) → COPIED (independent per process via COW)
+FILE* / file descriptor    → SHARED (same struct file in kernel)
+```
+
+**What happens to a file opened before fork:**
+
+```c
+FILE* file = fopen("data.txt", "r");  // opened BEFORE fork
+fork();
+```
+
+```
+Parent FILE struct → fd 3 ──→ ┐
+                               ├── SAME struct file (kernel)
+Child  FILE struct → fd 3 ──→ ┘    shared cursor! refcount = 2
+```
+
+**The FILE struct is COPIED (it's on your heap) but the struct file (kernel object) is NOT copied — just refcount incremented. The cursor is in the kernel object — so it's shared.**
+
+**The shared cursor problem:**
+
+```c
+// file has: "Hello World"
+// both parent and child have same cursor at position 0
+
+if(pid == 0) {
+    fgets(buffer, 5, file);  // child reads "Hello", cursor → 5
+}
+else {
+    fgets(buffer, 5, file);  // parent reads "World"! cursor was already at 5!
+}
+```
+
+**Solutions:**
+
+```c
+// Option 1: open file AFTER fork (each gets independent struct file)
+fork();
+if(pid == 0) { FILE* f = fopen("data.txt", "r"); }
+
+// Option 2: close unused copy immediately after fork
+fork();
+if(pid == 0) {
+    fclose(file);    // child doesn't need it → close
+    // do other work
+}
+```
+
+**Why your code works despite the shared cursor:**
+
+```
+Parent reads file BEFORE fork each iteration:
+    fgets() → parent fills orders_arr
+    THEN fork happens
+    Child inherits cursor position BUT never reads file
+    Child just closes its reference (refcount decrements)
+    Parent continues reading next chunk normally
+```
+
+The parallelism is in **computation**, not I/O. Parent serializes all I/O, children only work on already-read data.
+
+**fclose() in child — do you need it?**
+
+```
+Calling fclose() in child:
+└── decrements refcount → from 2 to 1
+    parent's reference unaffected
+    file still open for parent ✓
+
+NOT calling fclose() in child:
+└── exit() handles it anyway → refcount decremented on exit
+    no real difference
+```
+
+> **Best practice:** In child processes that exit immediately, you don't need to manually fclose(). exit() handles all cleanup. Use `_exit()` instead of `exit()` in children after fork to avoid double-flushing stdio buffers.
+
+---
+
+## 50. fork() + Heap Memory — COW
+
+**Copy-on-Write (COW)** — fork doesn't actually copy all memory immediately. It's expensive. Instead:
+
+```
+fork() called:
+parent page → [physical page A]  ← both point here, read-only
+child page  → [physical page A]
+
+child writes to a variable:
+parent page → [physical page A]  ← parent unchanged
+child page  → [physical page B]  ← kernel copied ONLY this page
+```
+
+Forking is **cheap until you start writing**. Pages that neither process writes to are never duplicated — they stay as one shared physical page.
+
+**For malloc'd memory:**
+
+```c
+int* ptr = malloc(sizeof(int));
+*ptr = 42;
+fork();
+```
+
+```
+After fork:
+Parent virtual 0x500 → page table A → physical frame A (value: 42)
+Child  virtual 0x500 → page table B → physical frame A (value: 42) ← same!
+
+Child writes *ptr = 99:
+→ COW triggers
+→ kernel copies frame A to frame B
+→ Child  virtual 0x500 → frame B (value: 99)
+→ Parent virtual 0x500 → frame A (value: 42) ← unaffected!
+```
+
+**Do you need to free() in the child?**
+
+```
+Child never writes to malloc'd memory:
+→ COW never triggers
+→ one shared physical page (no duplication)
+→ no need to free (exit() handles it)
+
+Child writes to malloc'd memory:
+→ COW triggers → physical page duplicated
+→ child owns its own copy
+→ theoretically should free, but exit() handles it anyway
+
+Best practice: just exit() — let the OS clean up
+Don't call free() in child — you're paying COW cost for zero benefit
+(free() modifies heap metadata → triggers COW on that page → pointless copy)
+```
+
+**free() — what it actually does:**
+
+```
+1. Marks block as available in heap allocator (userspace, virtual)
+2. May eventually call munmap() to release physical pages to kernel
+   (or it might not — allocator often keeps pages for reuse)
+
+So free() is primarily a userspace operation.
+Physical memory release is a side effect that may or may not happen immediately.
+```
+
+---
+
+## 51. Lab Code Walkthroughs
+
+### process01.c — fork basics + variable independence
+
+```c
+int x = 3;
+pid = fork();
+// child:  x = 7  (only in child's memory)
+// parent: x = 19 (only in parent's memory)
+// proves: complete memory independence after fork
+```
+
+`sleep(1)` in parent — gives child time to finish so output isn't mixed up.
+
+### process02.c — orphan demonstration
+
+```c
+// child sleeps 10s, parent has nothing to do and exits
+sleep(10);
+printf("parent PID: %d\n", getppid());  // prints 1! reparented to init
+```
+
+### process03.c — wait + exit code collection
+
+```c
+sid = wait(&stat_loc);
+if(!(stat_loc & 0x00FF))              // byte 4 = 0? (normal exit)
+    printf("%d", stat_loc >> 8);       // extract exit code (bytes 1-3)
+```
+
+### process04.c — custom exit code
+
+```c
+exit(42);   // child sends specific exit code
+// parent reads: stat_loc >> 8 = 42
+```
+
+### process05.c — zombie demonstration
+
+```c
+// REVERSED timing:
+// child finishes immediately → becomes zombie
+// parent sleeps 10 seconds → not listening!
+// zombie visible in ps for 10 seconds
+// parent wakes → calls wait() → zombie cleaned
+sleep(10);
+pid = wait(&stat_loc);
+```
+
+### process06.c — execl demonstration
+
+```c
+if(pid == 0) {
+    execl("/bin/ps", "ps", "-e", NULL);  // child replaced by ps
+    // child never reaches final printf — its code is gone!
+}
+// only parent reaches: printf("PID %d terminated\n")
+```
+
+### process07.c — infinite loops + kill experiment
+
+```c
+while(1) {}  // both parent and child loop forever
+// purpose: observe with ps/top, practice kill command
+// kill parent → child becomes orphan (PPID changes to 1)
+// kill child → disappears from ps
+```
+
+### process08.c — nice + priority
+
+```c
+getpriority(PRIO_PROCESS, 0)  // read current nice value
+system("ps -l");               // show NI column in ps
+nice(5);                       // child: slightly lower priority
+nice(15);                      // parent: much lower priority
+while(1) {}                    // stay alive for observation
+```
+
+```
+system("ps -l") output:
+PID   NI   CMD
+100    0   process08   ← before nice
+100   15   process08   ← after nice(15) — much less CPU
+101    5   process08   ← after nice(5)  — slightly less CPU
+```
+
+---
+
+## 52. Common Mistakes in Process Management
+
+```c
+// 1. forgetting wait() → zombie accumulation
+fork();
+// parent does nothing after fork
+// child dies → zombie stays forever ❌
+// fix: always call wait() or waitpid() ❌
+
+// 2. wait() inside fork loop → kills parallelism
+for(int i = 0; i < n; i++) {
+    fork();
+    wait(&status);  // ❌ blocks until child done before next fork
+}
+// fix: fork loop first, wait loop second ✓
+
+// 3. exit code truncation for large values
+exit(300);                    // ❌ truncated to 44 (300 % 256)
+WEXITSTATUS(status) == 44;    // wrong answer!
+// fix: use pipes or shared memory for values > 255
+
+// 4. reading file in both parent and child (shared cursor)
+FILE* f = fopen("file.txt", "r");
+fork();
+if(pid == 0) fgets(buffer, 10, f);  // moves shared cursor ❌
+// parent's next read is at wrong position!
+// fix: open file after fork, or only read in one process
+
+// 5. freeing in child unnecessarily
+fork();
+if(pid == 0) {
+    free(ptr);    // ❌ triggers COW for no benefit
+    exit(0);      // exit() handles cleanup anyway
+}
+
+// 6. execl without fork → your program is gone
+execl("/bin/ps", "ps", NULL);  // ❌ your process is replaced!
+// fix: always fork first, execl in child
+
+// 7. not checking execl return
+execl("/bin/ps", "ps", NULL);
+// if we reach here → execl failed!
+// always add error handling after execl
+
+// 8. forgetting NULL at end of execl
+execl("/bin/ps", "ps", "-e");      // ❌ missing NULL → undefined behavior
+execl("/bin/ps", "ps", "-e", NULL); // ✅
+
+// 9. using exit() instead of _exit() in child after fork
+// exit() flushes stdio buffers → double flush if parent also exits!
+_exit(0);  // ✅ skips buffer flush in child
+```
+
+---
+
+## 53. Naming Reference — OS Functions
+
+| Name            | Stands For                        |
+| --------------- | --------------------------------- |
+| `fork()`        | Fork (split into two)             |
+| `wait()`        | Wait for child state change       |
+| `waitpid()`     | Wait for specific PID             |
+| `execl()`       | Execute (list of args)            |
+| `exit()`        | Exit process                      |
+| `_exit()`       | Exit directly (no cleanup)        |
+| `getpid()`      | Get Process ID                    |
+| `getppid()`     | Get Parent Process ID             |
+| `getpgrp()`     | Get Process Group ID              |
+| `nice()`        | Adjust nice value (priority)      |
+| `getpriority()` | Get current priority              |
+| `sleep()`       | Suspend for N seconds             |
+| `kill()`        | Send signal to process            |
+| `fopen()`       | File Open                         |
+| `fclose()`      | File Close                        |
+| `fgets()`       | File Get String                   |
+| `WIFEXITED()`   | Wait — If — Exited normally?      |
+| `WEXITSTATUS()` | Wait — Exit — Status (the code)   |
+| `perror()`      | Print Error (with system message) |
+| `system()`      | Run shell command from C          |
+| `mmap()`        | Memory Map (shared memory)        |
+| `PID`           | Process ID                        |
+| `PPID`          | Parent Process ID                 |
+| `PCB`           | Process Control Block             |
+| `COW`           | Copy On Write                     |
+| `fd`            | File Descriptor                   |
+| `NI`            | Nice value (ps column)            |
+| `PR`            | Priority (ps column)              |
+| `TTY`           | Teletype (terminal)               |
+
+---
+
+**END OF OS PROCESS MANAGEMENT SECTION** 🎓
+
+This section covers UNIX process management from first principles — built through real questions, common confusions, and deep dives into how everything works under the hood. From virtual memory to fork/exec/wait, from zombies to COW, from scheduling to file descriptors.
+
 **END OF GUIDE** 🎓
 
 This comprehensive guide covers everything from the foundational concepts of how Linux works to advanced bash scripting techniques, common pitfalls, and best practices. Keep it as a reference for your computer engineering journey!
