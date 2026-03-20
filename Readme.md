@@ -4982,6 +4982,1152 @@ _exit(0);  // ✅ skips buffer flush in child
 
 This section covers UNIX process management from first principles — built through real questions, common confusions, and deep dives into how everything works under the hood. From virtual memory to fork/exec/wait, from zombies to COW, from scheduling to file descriptors.
 
+---
+
+## 54. Inter-Process Communication (IPC) — System V
+
+### What is IPC and Why Do We Need It?
+
+Every process has its own **isolated memory space** — one process cannot read or write another's memory. This is by design for safety. But sometimes processes need to share data or coordinate. That's what IPC solves.
+
+```
+Without IPC:
+Process A [its memory]     Process B [its memory]
+              ↑ can't see each other ↑
+
+With IPC:
+Process A ←→ [shared resource in kernel] ←→ Process B
+```
+
+---
+
+### What is System V?
+
+System V is AT&T's official Unix standard from 1983. It introduced 3 IPC mechanisms that are still used today in Linux:
+
+```
+System V IPC:
+├── Message Queues  → pass messages between processes (like a mailbox)
+├── Shared Memory   → share a region of RAM directly (fastest)
+└── Semaphores      → coordinate access to shared resources (like a lock)
+```
+
+Key properties of ALL System V IPC objects:
+
+```
+✓ Live inside the kernel
+✓ Persist after your program exits (must explicitly delete them!)
+✓ Identified by a unique key
+✓ Have permissions just like files (0666 etc)
+✓ Monitored with: ipcs
+✓ Manually removed with: ipcrm
+```
+
+---
+
+### `ftok()` — File TO Key
+
+Before creating ANY IPC object you need a unique key. `ftok()` generates one:
+
+```c
+key_t key = ftok("keyfile", 65);
+//                   ^        ^
+//              any existing  proj_id (1-255)
+//              file path     differentiates multiple keys from same file
+```
+
+How it works internally:
+
+```
+takes the file's inode number
++ the device ID the file lives on
++ your proj_id
+= a unique key_t value
+```
+
+Why a file? Because a file path is something two separate programs can easily agree on. Both programs use the same file + same proj_id = same key = same IPC object.
+
+```
+"keyfile" doesn't need content — just needs to EXIST
+If file doesn't exist → ftok returns -1
+
+Same file + different proj_id = different keys:
+ftok("keyfile", 1)  → key for message queue
+ftok("keyfile", 2)  → key for shared memory
+ftok("keyfile", 3)  → key for semaphore
+```
+
+---
+
+### Permissions — Why `0666` and Why OR
+
+The leading `0` means **octal** (base 8). Permissions use octal because each digit maps to exactly 3 bits (rwx):
+
+```
+r = 4 = 100
+w = 2 = 010
+x = 1 = 001
+
+6 = rw = 110
+
+0666:
+owner  = 6 = rw
+group  = 6 = rw
+others = 6 = rw
+```
+
+Why OR with flags like `IPC_CREAT`?
+
+Because the second argument carries two types of info in one integer. The kernel designers placed permissions in the **lower 9 bits** and flags in **higher bits** so they never overlap:
+
+```
+0666       = 000 000 110 110 110  (bits 0-8)
+IPC_CREAT  = 000 001 000 000 000  (bit 9)
+
+OR them together:
+           = 000 001 110 110 110  (both in one int)
+```
+
+Kernel extracts them with AND masking:
+
+```c
+permissions = flags & 0777;    // extract lower 9 bits
+if (flags & IPC_CREAT) { ... } // check bit 9
+```
+
+---
+
+## 55. Message Queues
+
+### What is a Message Queue?
+
+Like a mailbox — sender drops messages in, receiver picks them up. They don't need to run at the same time (asynchronous).
+
+```
+Sender → [msg1][msg2][msg3] → Receiver
+              queue in kernel
+```
+
+```
+✓ Asynchronous   → sender and receiver don't run simultaneously
+✓ Persistent     → messages stay until read or queue deleted
+✓ Typed          → every message has a type number
+✓ Ordered        → FIFO by default
+✓ When read      → message is PERMANENTLY deleted from queue
+```
+
+---
+
+### The Message Structure
+
+```c
+struct msgbuff {
+    long mtype;      // MUST be first, MUST be positive
+    char mtext[70];  // actual message content
+};
+```
+
+`mtype` is a label/category. It lets you multiplex multiple conversations on ONE queue:
+
+```
+One queue:
+[mtype=1, "Hello"]
+[mtype=2, "ERROR"]
+[mtype=7, "Server response"]
+
+Process A reads only mtype=1
+Process B reads only mtype=2
+Process C reads only mtype=7
+→ looks like 3 separate queues but it's ONE
+```
+
+---
+
+### The 4 System Calls
+
+#### `msgget()` — Create or Access
+
+```c
+int msgq_id = msgget(key_id, 0666 | IPC_CREAT);
+```
+
+```
+key     → from ftok()
+flags   → IPC_CREAT: create if doesn't exist, return id if exists
+          IPC_CREAT | IPC_EXCL: create only if doesn't exist, else -1
+          0666: permissions
+returns → queue ID (int) on success, -1 on failure
+```
+
+#### `msgsnd()` — Send
+
+```c
+send_val = msgsnd(msgq_id, &message, sizeof(message.mtext), 0);
+//                                   ^
+//                                   size of DATA only, NOT including mtype
+//                                   kernel doesn't know your struct
+```
+
+```
+flags:
+0          → block if queue full (wait until space)
+IPC_NOWAIT → return -1 immediately if queue full
+```
+
+Why pass `msgsz` separately? The kernel sees raw bytes — it doesn't know your struct definition. `mtype` is metadata, only `mtext` is the data.
+
+#### `msgrcv()` — Receive
+
+```c
+rec_val = msgrcv(msgq_id, &message, sizeof(message.mtext), 7, 0);
+//                                                          ^
+//                                                      which mtype to receive
+```
+
+```
+mtype = 0  → receive absolute oldest message regardless of type
+mtype = 7  → receive only messages with mtype=7
+             kernel SCANS through queue for matching type
+             non-matching messages are untouched
+
+flags:
+0          → block if no matching message (wait)
+IPC_NOWAIT → return -1 immediately if no match
+MSG_NOERROR → if message too big, truncate instead of failing
+```
+
+When a message is read it is **permanently deleted** from the queue.
+
+#### `msgctl()` — Control
+
+```c
+msgctl(msgq_id, IPC_STAT, &ctrl_status_ds);  // get queue info
+msgctl(msgq_id, IPC_SET,  &ctrl_status_ds);  // change settings
+msgctl(msgq_id, IPC_RMID, NULL);             // DELETE the queue
+```
+
+`struct msqid_ds` is the kernel's metadata about the queue:
+
+```c
+struct msqid_ds {
+    msg_perm.mode  // permissions
+    msg_cbytes     // current bytes in queue
+    msg_qnum       // number of messages in queue
+    msg_qbytes     // max bytes allowed
+    msg_stime      // last msgsnd time
+    msg_rtime      // last msgrcv time
+};
+```
+
+`IPC_RMID`, `IPC_STAT`, `IPC_SET` are just human-readable aliases (macros) for numbers — defined in the kernel headers so code is readable instead of using magic numbers.
+
+`(struct msqid_ds *)0` = just NULL in old C style. IPC_RMID doesn't need a struct so you pass NULL.
+
+---
+
+### What is "Blocking"?
+
+The queue is a **buffer inside the kernel**. It has a max size (~16KB default).
+
+```
+Blocking (flag = 0):
+sender tries to send → queue full
+→ sender process is PAUSED by kernel
+→ waits doing nothing, consuming no CPU
+→ receiver reads a message → space available
+→ kernel WAKES sender up → send succeeds
+
+Non-blocking (IPC_NOWAIT):
+sender tries to send → queue full
+→ msgsnd returns -1 immediately
+→ your code decides what to do
+```
+
+---
+
+## 56. Shared Memory
+
+### What is Shared Memory?
+
+The fastest IPC. Two processes point to the **same physical RAM**. No copying at all.
+
+```
+Message Queue: Process A RAM → copy → Kernel RAM → copy → Process B RAM
+               2 software copies, data in 3 places
+
+Shared Memory: Process A → Physical RAM ← Process B
+               0 software copies, data in 1 place
+```
+
+Why is it faster? Because of how virtual memory works.
+
+---
+
+### Virtual Memory — The Key Concept
+
+Every process has **virtual addresses** that the kernel maps to physical RAM via a page table:
+
+```
+Process A page table:        Physical RAM:
+virtual  → physical
+0x1000  → 0xA000    ───────► 0xA000: Process A data
+0x2000  → 0xB000    ───────► 0xB000: Process A code
+
+Process B page table:
+0x1000  → 0xD000    ───────► 0xD000: Process B data
+```
+
+Same virtual address, different physical location = isolation.
+
+Shared memory makes two different virtual addresses in two processes point to the **same physical RAM**:
+
+```
+Process A page table:        Physical RAM:
+0x4000  → 0xFF000   ───────► 0xFF000: "Hello"  ◄───── 0x6000 ← Process B
+```
+
+Process A writes to virtual 0x4000 → physically writes to 0xFF000.
+Process B reads from virtual 0x6000 → physically reads from 0xFF000.
+**Same physical location. Zero copies.**
+
+---
+
+### The 4 System Calls
+
+#### `shmget()` — Create or Access
+
+```c
+int shmid = shmget(key, 1024, 0666 | IPC_CREAT);
+//                       ^
+//                  size in bytes to allocate
+```
+
+#### `shmat()` — Attach
+
+This is unique to shared memory. After `shmget()` you have an ID but can't use it yet. You need to **add an entry to your page table** pointing to the shared physical RAM:
+
+```c
+char *ptr = (char *)shmat(shmid, 0, 0);
+//                                ^
+//                                0 = let kernel find free virtual address
+//                                (always do this — don't pick your own)
+```
+
+Why `char *`? It's the most flexible — moves 1 byte at a time, works with strings. But you can cast to anything:
+
+```c
+int *ptr            = (int *)shmat(shmid, 0, 0);
+struct MyData *ptr  = (struct MyData *)shmat(shmid, 0, 0);
+```
+
+Why let kernel choose the address? Your process memory already has code, stack, heap at various addresses. If you pick an already-used address → crash. Kernel knows exactly which virtual addresses are free.
+
+`shmat` returns `void *` because the kernel doesn't know what type you'll store — raw bytes. You cast it to whatever you need.
+
+#### `shmdt()` — Detach
+
+```c
+shmdt(ptr);
+```
+
+Removes the entry from your page table. You can no longer access shared memory via this pointer. But **shared memory still exists in physical RAM** — other processes can still use it.
+
+```
+shmdt()          = you close the document → still exists for others
+shmctl(IPC_RMID) = you DELETE the document → gone for everyone
+```
+
+#### `shmctl()` — Control
+
+```c
+shmctl(shmid, IPC_STAT, &status);  // get info
+shmctl(shmid, IPC_SET,  &status);  // change settings
+shmctl(shmid, IPC_RMID, NULL);     // DELETE the segment
+```
+
+---
+
+### The Big Problem With Shared Memory
+
+```
+Process A                    Process B
+read  x = 5                  read  x = 5
+x = x + 1                   x = x + 1
+write x = 6                  write x = 6
+
+Result:  x = 6
+Should be: x = 7 ❌
+```
+
+This is a **race condition** — two processes access shared data simultaneously and corrupt it. The CPU breaks `x = x + 1` into 3 instructions (LOAD, ADD, STORE) and the OS can switch processes between any two of them.
+
+This is exactly why **Semaphores** exist.
+
+---
+
+## 57. Semaphores
+
+### What is a Semaphore?
+
+A semaphore is **one integer stored in the kernel** that represents available resources:
+
+```
+value > 0 → resources available → go ahead
+value = 0 → no resources → WAIT
+```
+
+It has two properties:
+
+1. All operations on it are **atomic** (cannot be interrupted mid-operation)
+2. It has a **waiting list** — blocked processes sleep here until woken up
+
+---
+
+### P and V — The Only Two Operations
+
+Invented by Dutch mathematician **Dijkstra** in 1965:
+
+```
+P = Proberen  = "to try"     = TAKE a resource  = subtract
+V = Verhogen  = "to increase" = RETURN a resource = add
+
+Also called:
+P = wait / down / acquire / lock
+V = signal / up / release / unlock
+```
+
+**P operation (sem_op = -1):**
+
+```
+value > 0 → subtract 1 → continue (got the resource)
+value = 0 → add process to waiting list → SLEEP
+            OS switches to another process
+            process does nothing until woken up
+```
+
+**V operation (sem_op = +1):**
+
+```
+add 1 to value
+if waiting list is empty → done
+if processes are waiting → wake up first one
+```
+
+Why does adding make sense? Because the semaphore counts **available resources**. Adding means returning one back to the pool.
+
+```
+Library with 3 book copies → semaphore = 3
+
+Student borrows → P → value = 2
+Student borrows → P → value = 1
+Student borrows → P → value = 0
+Student borrows → P → value = 0 → BLOCKED
+
+Student returns → V → value = 1 → blocked student WAKES UP
+```
+
+---
+
+### Why Operations Must Be Atomic
+
+If P was NOT atomic:
+
+```
+Process A: checks value = 1
+Process B: checks value = 1  (before A decremented!)
+Process A: decrements → value = 0 → enters
+Process B: decrements → value = -1 → also enters!
+BOTH IN CRITICAL SECTION → semaphore is broken!
+```
+
+This is why you cannot implement semaphores yourself — you need kernel support.
+
+---
+
+### The 3 System Calls
+
+#### `semget()` — Create or Access
+
+```c
+int semid = semget(key, 1, 0666 | IPC_CREAT);
+//                      ^
+//                      number of semaphores in the SET
+```
+
+Semaphores come in **sets** — one set can contain multiple semaphores, each protecting a different resource.
+
+⚠️ Semaphores are created with value **0 by default** (= blocked). You MUST initialize before use.
+
+#### `semctl()` — Initialize and Control
+
+```c
+int semctl(int semid, int semnum, int cmd, union semun arg);
+//                        ^           ^          ^
+//                   which sem    operation    value/data
+```
+
+**What is `union semun`?**
+
+A union is like a struct but all members **share the same memory**. Only one member is valid at a time. Size = size of largest member:
+
+```c
+union semun {
+    int              val;    // for SETVAL  (set one value)
+    struct semid_ds *buf;    // for IPC_STAT, IPC_SET
+    unsigned short  *array;  // for SETALL, GETALL
+};
+
+// Only fill the field that matches your cmd:
+union semun arg;
+arg.val = 1;
+semctl(semid, 0, SETVAL, arg);   // kernel reads arg as int
+
+arg.buf = &ds;
+semctl(semid, 0, IPC_STAT, arg); // kernel reads arg as pointer
+```
+
+Why union and not struct? Memory saving — `semctl` only ever needs ONE type at a time. No point storing all three simultaneously.
+
+**Definition vs Declaration:**
+
+```c
+union semun { ... };    // definition → 0 bytes, just a blueprint
+union semun arg;        // declaration → NOW memory is allocated
+```
+
+Same for structs, classes — the type definition allocates nothing. Only creating a variable allocates memory.
+
+**Commands:**
+
+```
+SETVAL  → set one semaphore:  arg.val = 1; semctl(semid, 0, SETVAL, arg);
+GETVAL  → get one semaphore:  int v = semctl(semid, 0, GETVAL, arg);
+SETALL  → set all at once:    arg.array = vals; semctl(semid, 0, SETALL, arg);
+GETALL  → get all at once:    arg.array = vals; semctl(semid, 0, GETALL, arg);
+IPC_RMID → delete:            semctl(semid, 0, IPC_RMID, 0);
+```
+
+#### `semop()` — Perform Wait/Signal
+
+```c
+int semop(int semid, struct sembuf *ops, unsigned n);
+//                                          ^
+//                                   how many operations
+```
+
+**`struct sembuf` — the operation form:**
+
+```c
+struct sembuf {
+    unsigned short sem_num;  // which semaphore in set (0,1,2...)
+    short          sem_op;   // what to do
+    short          sem_flg;  // how to behave
+};
+```
+
+`sem_op`:
+
+```
+-1  → WAIT   (take 1 resource, block if 0)
++1  → SIGNAL (return 1 resource, wake waiters)
+-N  → wait for N resources at once
++N  → return N resources at once
+ 0  → block until semaphore value reaches 0
+```
+
+`sem_flg`:
+
+```
+0          → block if can't proceed (default)
+IPC_NOWAIT → return -1 instead of blocking
+SEM_UNDO   → if process crashes, kernel automatically undoes this operation
+             → ALWAYS use this to prevent deadlock from crashed processes
+```
+
+**SEM_UNDO example:**
+
+```
+Without SEM_UNDO:
+Process A locks (value=0) → crashes → never unlocks
+Process B waits forever → DEADLOCK!
+
+With SEM_UNDO:
+Process A locks (value=0) → crashes
+Kernel automatically signals → value=1
+Process B wakes up → works fine ✓
+```
+
+---
+
+### The Semaphore is NOT Attached to the Resource
+
+There is **zero connection** in the kernel between a semaphore and shared memory. It's purely a programmer's convention:
+
+```c
+// These two have NO link — kernel doesn't know they're related:
+int shmid = shmget(key, size, 0666 | IPC_CREAT);
+int semid = semget(key, 1,    0666 | IPC_CREAT);
+```
+
+The semaphore only works because EVERY process agrees to follow these rules:
+
+```
+Rule 1: ALWAYS semop(lock) BEFORE touching shared memory
+Rule 2: ALWAYS semop(unlock) AFTER you're done
+Rule 3: NEVER touch shared memory without going through semaphore first
+```
+
+If any process breaks these rules → race condition. The kernel does NOT enforce this. YOU do.
+
+---
+
+### Clean Usage Pattern
+
+```c
+// lock and unlock structs:
+struct sembuf lock   = {0, -1, SEM_UNDO};  // {which sem, op, flag}
+struct sembuf unlock = {0, +1, SEM_UNDO};
+
+// Before critical section:
+semop(semid, &lock, 1);
+
+// critical section — only ONE process here at a time:
+ptr->counter = ptr->counter + 1;
+
+// After critical section:
+semop(semid, &unlock, 1);
+```
+
+What happens at the math level:
+
+```
+Lock:   semaphore=1, op=-1 → 1+(-1)=0  → allowed, go in  ✓
+        semaphore=0, op=-1 → 0+(-1)=-1 → impossible → BLOCK
+
+Unlock: semaphore=0, op=+1 → 0+1=1     → done, wake waiters ✓
+```
+
+---
+
+## 58. Shared Memory + Semaphores Together
+
+They always go together:
+
+```
+Shared Memory = fast data sharing    BUT race conditions
+Semaphores    = prevents race conditions
+Together      = fast AND safe ✓
+```
+
+### Full Flow
+
+```
+Process A (Writer)                    Process B (Reader)
+│                                     │
+│ key = ftok("keyfile", 65)           │ key = ftok("keyfile", 65)
+│ shmid = shmget(key, size, flags)    │ shmid = shmget(key, size, 0666)
+│ semid = semget(key, 1, flags)       │ semid = semget(key, 1, 0666)
+│ semctl(SETVAL, 1)  ← initialize!   │ (don't initialize — A already did)
+│ ptr = shmat(shmid, 0, 0)           │ ptr = shmat(shmid, 0, 0)
+│                                     │
+│ semop(lock)                         │ semop(lock) → BLOCKED
+│ ptr->data = 42      (writing)       │ sleeping...
+│ semop(unlock)                       │ WOKEN UP
+│                                     │ semop(lock) → value=0
+│                                     │ printf(ptr->data)  (reading)
+│                                     │ semop(unlock)
+│                                     │
+│ shmdt(ptr)                          │ shmdt(ptr)
+│                                     │ shmctl(IPC_RMID) ← one process deletes
+│                                     │ semctl(IPC_RMID) ← one process deletes
+```
+
+**Key rules:**
+
+```
+Only ONE process initializes semaphore (SETVAL)
+Only ONE process deletes IPC objects (IPC_RMID)
+Both processes use the SAME key → same objects
+ALWAYS lock before, unlock after
+```
+
+---
+
+## 59. Naming Reference — IPC Functions
+
+| Name          | Stands For                          |
+| ------------- | ----------------------------------- |
+| `ftok()`      | File TO Key                         |
+| `msgget()`    | Message Queue Get (create/access)   |
+| `msgsnd()`    | Message Send                        |
+| `msgrcv()`    | Message Receive                     |
+| `msgctl()`    | Message Queue Control               |
+| `shmget()`    | Shared Memory Get                   |
+| `shmat()`     | Shared Memory Attach                |
+| `shmdt()`     | Shared Memory Detach                |
+| `shmctl()`    | Shared Memory Control               |
+| `semget()`    | Semaphore Get                       |
+| `semop()`     | Semaphore Operation                 |
+| `semctl()`    | Semaphore Control                   |
+| `IPC_CREAT`   | IPC Create                          |
+| `IPC_EXCL`    | IPC Exclusive                       |
+| `IPC_RMID`    | IPC Remove ID                       |
+| `IPC_STAT`    | IPC Status                          |
+| `IPC_SET`     | IPC Set                             |
+| `IPC_NOWAIT`  | IPC No Wait                         |
+| `SEM_UNDO`    | Semaphore Undo                      |
+| `MSG_NOERROR` | Message No Error (truncate)         |
+| `SHM_RDONLY`  | Shared Memory Read Only             |
+| `ipcs`        | IPC Status (linux command)          |
+| `ipcrm`       | IPC Remove (linux command)          |
+| `mtype`       | Message Type                        |
+| `mtext`       | Message Text                        |
+| `sembuf`      | Semaphore Buffer (operation struct) |
+| `semun`       | Semaphore Union (control data)      |
+| `msqid_ds`    | Message Queue ID Data Structure     |
+| `shmid_ds`    | Shared Memory ID Data Structure     |
+| `semid_ds`    | Semaphore ID Data Structure         |
+
+---
+
+## 60. Common IPC Mistakes
+
+```c
+// 1. forgetting to delete IPC objects → they stay in kernel forever!
+// always call IPC_RMID when done
+// check with: ipcs
+// remove manually with: ipcrm
+
+// 2. forgetting to initialize semaphore
+int semid = semget(key, 1, 0666 | IPC_CREAT);
+// semaphore value = 0 by default!
+// every process that calls semop(lock) will block forever
+// fix: semctl(semid, 0, SETVAL, arg) with arg.val = 1
+
+// 3. two processes both initializing semaphore
+// second init resets value to 1 even if first process already locked it
+// fix: only ONE process initializes
+
+// 4. touching shared memory without semaphore
+ptr->x = ptr->x + 1;  // ❌ race condition!
+// fix: always lock → touch → unlock
+
+// 5. forgetting to unlock → deadlock
+semop(semid, &lock, 1);
+ptr->x = 42;
+// forgot semop(unlock)!  ❌
+// next process that tries to lock waits forever
+
+// 6. using shmdt instead of IPC_RMID to "delete"
+shmdt(ptr);  // ❌ only detaches from YOUR process, memory still in kernel
+shmctl(shmid, IPC_RMID, NULL);  // ✅ actually deletes it
+
+// 7. both processes trying to delete
+// second IPC_RMID call on already-deleted object → error
+// fix: only ONE process (usually last to finish) calls IPC_RMID
+
+// 8. keyfile doesn't exist
+key_t key = ftok("keyfile", 65);  // returns -1 if keyfile missing!
+// fix: create the keyfile before running: touch keyfile
+```
+
+---
+
+## 61. Full Code Examples
+
+---
+
+### Example 1 — Message Queue: Sender
+
+```c
+// sender.c
+// run this first, then run receiver.c
+// compile: gcc sender.c -o sender
+
+#include <sys/types.h>
+#include <sys/ipc.h>
+#include <sys/msg.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+
+// message structure — mtype MUST be first and MUST be long
+struct msgbuff {
+    long mtype;
+    char mtext[70];
+};
+
+int main() {
+    // Step 1: generate key — both sender and receiver must use same file + id
+    key_t key_id = ftok("keyfile", 65);
+    if (key_id == -1) {
+        perror("ftok failed — does keyfile exist?");
+        exit(-1);
+    }
+
+    // Step 2: create or access the message queue
+    // IPC_CREAT → create if doesn't exist, return id if exists
+    // 0666 → read+write for everyone
+    int msgq_id = msgget(key_id, 0666 | IPC_CREAT);
+    if (msgq_id == -1) {
+        perror("msgget failed");
+        exit(-1);
+    }
+    printf("Queue created. ID = %d\n", msgq_id);
+
+    // Step 3: fill the message
+    struct msgbuff message;
+    message.mtype = 7;  // receiver will filter by this type
+    strcpy(message.mtext, "Hello from sender!");
+
+    // Step 4: send the message
+    // sizeof(message.mtext) → size of DATA only, not including mtype
+    // 0 → block if queue is full
+    int send_val = msgsnd(msgq_id, &message, sizeof(message.mtext), 0);
+    if (send_val == -1) {
+        perror("msgsnd failed");
+        exit(-1);
+    }
+    printf("Message sent: %s\n", message.mtext);
+
+    // sender doesn't delete the queue — receiver does
+    return 0;
+}
+```
+
+---
+
+### Example 2 — Message Queue: Receiver
+
+```c
+// receiver.c
+// run sender.c first, then this
+// compile: gcc receiver.c -o receiver
+
+#include <sys/types.h>
+#include <sys/ipc.h>
+#include <sys/msg.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+
+struct msgbuff {
+    long mtype;
+    char mtext[70];
+};
+
+int main() {
+    // Step 1: same key as sender → same queue
+    key_t key_id = ftok("keyfile", 65);
+    if (key_id == -1) {
+        perror("ftok failed");
+        exit(-1);
+    }
+
+    // Step 2: access the existing queue (IPC_CREAT still here in case
+    // receiver runs before sender — it just creates an empty queue and waits)
+    int msgq_id = msgget(key_id, 0666 | IPC_CREAT);
+    if (msgq_id == -1) {
+        perror("msgget failed");
+        exit(-1);
+    }
+    printf("Queue accessed. ID = %d\n", msgq_id);
+
+    struct msgbuff message;
+
+    // Step 3: receive loop
+    while (1) {
+        // 7 → only receive messages with mtype = 7
+        // kernel scans queue for matching type
+        // MSG_NOERROR → if message too big, truncate instead of failing
+        // 0 → block until a matching message arrives
+        int rec_val = msgrcv(msgq_id, &message, sizeof(message.mtext), 7,
+                             MSG_NOERROR);
+        if (rec_val == -1) {
+            perror("msgrcv failed");
+            exit(-1);
+        }
+        printf("Message received: %s\n", message.mtext);
+        // message is now PERMANENTLY deleted from the queue
+    }
+
+    // Step 4: check queue status (only reached if you break the loop)
+    struct msqid_ds status;
+    msgctl(msgq_id, IPC_STAT, &status);
+    printf("Messages in queue: %ld\n", status.msg_qnum);
+    printf("Max bytes allowed: %ld\n", status.msg_qbytes);
+    printf("Permissions: %o\n", status.msg_perm.mode);
+
+    // Step 5: delete the queue from the kernel
+    // if you don't do this it stays forever — check with: ipcs
+    msgctl(msgq_id, IPC_RMID, NULL);
+    printf("Queue deleted.\n");
+
+    return 0;
+}
+```
+
+---
+
+### Example 3 — Shared Memory + Semaphores: Writer
+
+```c
+// writer.c
+// run this first, then reader.c
+// compile: gcc writer.c -o writer
+
+#include <sys/types.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
+#include <sys/sem.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+// union semun is not always defined in headers — define it yourself
+union semun {
+    int              val;    // for SETVAL
+    struct semid_ds *buf;    // for IPC_STAT, IPC_SET
+    unsigned short  *array;  // for SETALL, GETALL
+};
+
+// what we store in shared memory
+// both writer and reader must use the same struct
+struct shared_data {
+    int  counter;
+    char message[100];
+};
+
+int main() {
+    // Step 1: generate key
+    // both writer and reader use same file + id → same key → same objects
+    key_t key = ftok("keyfile", 65);
+    if (key == -1) {
+        perror("ftok failed");
+        exit(-1);
+    }
+
+    // Step 2: create shared memory segment
+    // size = enough bytes to hold our struct
+    int shmid = shmget(key, sizeof(struct shared_data), 0666 | IPC_CREAT);
+    if (shmid == -1) {
+        perror("shmget failed");
+        exit(-1);
+    }
+    printf("Shared memory created. ID = %d\n", shmid);
+
+    // Step 3: attach shared memory to this process
+    // 0 → let kernel find a free virtual address (always do this)
+    // returns a pointer we use like a normal variable
+    struct shared_data *ptr = (struct shared_data *)shmat(shmid, 0, 0);
+    if (ptr == (struct shared_data *)-1) {
+        perror("shmat failed");
+        exit(-1);
+    }
+    printf("Shared memory attached at: %p\n", ptr);
+
+    // Step 4: create semaphore set with 1 semaphore
+    int semid = semget(key, 1, 0666 | IPC_CREAT);
+    if (semid == -1) {
+        perror("semget failed");
+        exit(-1);
+    }
+
+    // Step 5: initialize semaphore to 1 (resource is free)
+    // MUST do this — semaphores are created with value 0 (blocked) by default
+    // only the WRITER initializes — reader just accesses
+    union semun arg;
+    arg.val = 1;
+    if (semctl(semid, 0, SETVAL, arg) == -1) {
+        perror("semctl SETVAL failed");
+        exit(-1);
+    }
+    printf("Semaphore initialized to 1.\n");
+
+    // Step 6: define lock and unlock operations
+    // {sem_num, sem_op, sem_flg}
+    // sem_num = 0 → first semaphore in the set
+    // sem_op  = -1 → subtract 1 (lock)
+    // sem_op  = +1 → add 1 (unlock)
+    // SEM_UNDO → if this process crashes, kernel undoes the operation
+    struct sembuf lock   = {0, -1, SEM_UNDO};
+    struct sembuf unlock = {0, +1, SEM_UNDO};
+
+    // Step 7: lock BEFORE touching shared memory
+    // kernel checks semaphore value:
+    // value=1 → subtract → value=0 → we go in
+    // value=0 → cannot subtract → we SLEEP until someone unlocks
+    printf("Locking semaphore...\n");
+    semop(semid, &lock, 1);
+    printf("Semaphore locked. Value = %d\n", semctl(semid, 0, GETVAL, arg));
+
+    // Step 8: safely write to shared memory
+    ptr->counter = 42;
+    strcpy(ptr->message, "Hello from writer!");
+    printf("Written: counter=%d, message=%s\n", ptr->counter, ptr->message);
+
+    // Step 9: unlock AFTER done
+    // kernel adds 1 → value=1 → wakes up any waiting process
+    semop(semid, &unlock, 1);
+    printf("Semaphore unlocked. Value = %d\n", semctl(semid, 0, GETVAL, arg));
+
+    // Step 10: detach shared memory from this process
+    // shared memory still EXISTS in kernel — reader can still use it
+    // this just removes the entry from our page table
+    shmdt(ptr);
+    printf("Detached. Shared memory still exists for reader.\n");
+
+    // writer does NOT delete — reader deletes after it's done
+    return 0;
+}
+```
+
+---
+
+### Example 4 — Shared Memory + Semaphores: Reader
+
+```c
+// reader.c
+// run writer.c first, then this
+// compile: gcc reader.c -o reader
+
+#include <sys/types.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
+#include <sys/sem.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+union semun {
+    int              val;
+    struct semid_ds *buf;
+    unsigned short  *array;
+};
+
+struct shared_data {
+    int  counter;
+    char message[100];
+};
+
+int main() {
+    // Step 1: same key as writer → same shared memory + same semaphore
+    key_t key = ftok("keyfile", 65);
+    if (key == -1) {
+        perror("ftok failed");
+        exit(-1);
+    }
+
+    // Step 2: access EXISTING shared memory
+    // no IPC_CREAT needed — writer already created it
+    // pass 0 for size when accessing existing segment
+    int shmid = shmget(key, sizeof(struct shared_data), 0666);
+    if (shmid == -1) {
+        perror("shmget failed — did writer run first?");
+        exit(-1);
+    }
+
+    // Step 3: attach
+    struct shared_data *ptr = (struct shared_data *)shmat(shmid, 0, 0);
+    if (ptr == (struct shared_data *)-1) {
+        perror("shmat failed");
+        exit(-1);
+    }
+
+    // Step 4: access EXISTING semaphore — do NOT initialize again!
+    // initializing would reset value to 1 even if writer is mid-operation
+    int semid = semget(key, 1, 0666);
+    if (semid == -1) {
+        perror("semget failed");
+        exit(-1);
+    }
+
+    union semun arg;
+
+    // Step 5: lock before reading
+    struct sembuf lock   = {0, -1, SEM_UNDO};
+    struct sembuf unlock = {0, +1, SEM_UNDO};
+
+    printf("Waiting for semaphore...\n");
+    semop(semid, &lock, 1);
+    printf("Semaphore locked. Value = %d\n", semctl(semid, 0, GETVAL, arg));
+
+    // Step 6: safely read from shared memory
+    printf("Read: counter=%d\n", ptr->counter);
+    printf("Read: message=%s\n", ptr->message);
+
+    // Step 7: unlock
+    semop(semid, &unlock, 1);
+    printf("Semaphore unlocked. Value = %d\n", semctl(semid, 0, GETVAL, arg));
+
+    // Step 8: detach
+    shmdt(ptr);
+
+    // Step 9: reader is last to finish → reader deletes everything
+    // if you don't delete → objects stay in kernel forever
+    // verify with: ipcs
+    shmctl(shmid, IPC_RMID, NULL);
+    printf("Shared memory deleted.\n");
+
+    semctl(semid, 0, IPC_RMID, 0);
+    printf("Semaphore deleted.\n");
+
+    return 0;
+}
+```
+
+---
+
+### How to Run the Examples
+
+```bash
+# create the keyfile first (just needs to exist, no content needed)
+touch keyfile
+
+# compile everything
+gcc sender.c  -o sender
+gcc receiver.c -o receiver
+gcc writer.c  -o writer
+gcc reader.c  -o reader
+
+# Message Queue example:
+./sender    # sends a message
+./receiver  # receives it (runs in loop, Ctrl+C to stop)
+
+# Shared Memory + Semaphore example:
+./writer    # writes to shared memory
+./reader    # reads from shared memory, then deletes everything
+
+# check for leftover IPC objects anytime:
+ipcs
+
+# manually remove if your program crashed without cleaning up:
+ipcrm -q <msgq_id>   # remove message queue
+ipcrm -m <shmid>     # remove shared memory
+ipcrm -s <semid>     # remove semaphore
+```
+
+---
+
+### What Each Example Demonstrates
+
+```
+sender.c  + receiver.c → message queue basics
+                          typed messages, blocking receive,
+                          msgctl status check, IPC_RMID cleanup
+
+writer.c  + reader.c   → shared memory + semaphore together
+                          virtual address attachment (shmat),
+                          semaphore init and lock/unlock pattern,
+                          detach vs delete distinction,
+                          one process initializes, one process cleans up
+```
+
+---
+
+**END OF IPC SECTION** 🎓
+
+System V IPC gives you three tools: message queues for async messaging, shared memory for speed, and semaphores for safety. In practice shared memory and semaphores always go together — shared memory gives you the speed, semaphores give you the correctness. The connection between them exists only in your discipline as a programmer.
+
 **END OF GUIDE** 🎓
 
 This comprehensive guide covers everything from the foundational concepts of how Linux works to advanced bash scripting techniques, common pitfalls, and best practices. Keep it as a reference for your computer engineering journey!
